@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link data-trunk rel="rust" data-type="main" href="." data-wasm-opt="z" />
+  <link data-trunk rel="rust" data-type="worker" href="aidb-worker" data-wasm-opt="z" />
+  <link data-trunk rel="css" href="styles.css" data-inline />
+  <link data-trunk rel="copy-dir" href="public" />
+  <title>aidb</title>
+</head>
+<body>
+  <main id="root">
+    <div id="loading">
+      <h1>Loading</h1>
+      <noscript>
+        <a href="https://www.enablejavascript.io/" target="_blank" class="link">
+          <p>JavaScript required.</p>
+          <p>Click here for instructions how to enable JavaScript.</p>
+        </a>
+      </noscript>
+    </div>
+  </main>
+</body>
+</html>

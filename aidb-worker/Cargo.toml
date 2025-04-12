@@ -1,0 +1,14 @@
+[package]
+name = "aidb-worker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aidb-core = { path = "../aidb-core" }
+console_error_panic_hook = "0.1"
+futures = "0.3"
+gloo-worker = "0.5"
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+web-sys = "0.3"
+opendal = { version = "0.53", default-features = false, features = ["services-opfs"] }
