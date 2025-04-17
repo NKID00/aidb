@@ -1,18 +1,18 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="w-full h-full m-0 p-0">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link data-trunk rel="rust" data-type="main" href="." data-wasm-opt="z" />
   <link data-trunk rel="rust" data-type="worker" href="aidb-worker" data-wasm-opt="z" />
-  <link data-trunk rel="css" href="styles.css" data-inline />
+  <link data-trunk rel="tailwind-css" href="styles.css" data-inline />
   <link data-trunk rel="copy-dir" href="public" />
   <title>aidb</title>
 </head>
-<body>
-  <main id="root">
-    <div id="loading">
-      <h1>Loading</h1>
+<body class="w-full h-full m-0 p-0 font-sans text-base bg-white flex items-stretch">
+  <main id="root" class="flex-1 flex flex-col justify-center items-center">
+    <div class="px-4 flex flex-col gap-2 items-center text-center">
+      <h1 class="text-4xl">Loading</h1>
       <noscript>
         <a href="https://www.enablejavascript.io/" target="_blank" class="link">
           <p>JavaScript required.</p>
