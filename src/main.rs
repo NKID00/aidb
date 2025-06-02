@@ -1,6 +1,8 @@
 mod app;
 use app::App;
 
+mod worker;
+
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 

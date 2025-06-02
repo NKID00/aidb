@@ -84,7 +84,7 @@ impl<W: AsyncWrite + Send + Unpin> AsyncMysqlShim<W> for MySQLShim {
         let mut lock = self.core.lock().await;
         match lock.query(query) {
             Ok(Response::Rows { columns, rows }) => {
-                let columns: Vec<_> = columns.into_iter().map(aidb_type_to_mysql).collect();
+                let columns: Vec<_> = columns.into_iter().map(aidb_column_to_mysql).collect();
                 let mut r = results.start(&columns).await?;
                 for row in rows {
                     r.write_row(aidb_row_to_mysql(row)).await?;
@@ -119,12 +119,12 @@ impl<W: AsyncWrite + Send + Unpin> AsyncMysqlShim<W> for MySQLShim {
     }
 }
 
-fn aidb_type_to_mysql(data_type: DataType) -> Column {
+fn aidb_column_to_mysql(column: (String, DataType)) -> Column {
     Column {
         table: "".to_owned(),
-        column: "".to_owned(),
+        column: column.0,
         // See https://dev.mysql.com/doc/c-api/8.4/en/c-api-prepared-statement-type-codes.html
-        coltype: match data_type {
+        coltype: match column.1 {
             DataType::Integer => ColumnType::MYSQL_TYPE_LONGLONG,
             DataType::Real => ColumnType::MYSQL_TYPE_DOUBLE,
             DataType::Text => ColumnType::MYSQL_TYPE_BLOB,

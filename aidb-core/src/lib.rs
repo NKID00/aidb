@@ -4,7 +4,7 @@ mod query;
 
 use cache::Cache;
 pub use data::{DataType, Value};
-pub use query::{Response, Row, Rows};
+pub use query::{Response, Row, RowStream};
 
 pub use eyre::Result;
 use opendal::Operator;

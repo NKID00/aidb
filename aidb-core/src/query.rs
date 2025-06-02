@@ -3,9 +3,9 @@ use crate::data::{DataType, Value};
 pub type Row = Vec<Value>;
 
 #[derive(Debug)]
-pub struct Rows;
+pub struct RowStream;
 
-impl Iterator for Rows {
+impl Iterator for RowStream {
     type Item = Row;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -15,6 +15,11 @@ impl Iterator for Rows {
 
 #[derive(Debug)]
 pub enum Response {
-    Rows { columns: Vec<DataType>, rows: Rows },
-    Meta { affected_rows: usize },
+    Rows {
+        columns: Vec<(String, DataType)>,
+        rows: RowStream,
+    },
+    Meta {
+        affected_rows: usize,
+    },
 }
