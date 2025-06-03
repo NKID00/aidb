@@ -157,5 +157,5 @@ impl ToMysqlValue for ValueWrapper {
 }
 
 fn aidb_row_to_mysql(row: Row) -> Vec<ValueWrapper> {
-    row.into_iter().map(|v| ValueWrapper(v)).collect()
+    row.into_iter().map(ValueWrapper).collect()
 }
