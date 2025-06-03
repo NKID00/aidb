@@ -176,10 +176,10 @@ pub fn App() -> impl IntoView {
                     <For each=move || { Into::<Vec<Chat>>::into(chat().clone()) } key=Chat::id children={ |c| { view! {
                         <div class="flex flex-col justify-start">
                             <hr class="my-8 border-slate-100" />
-                            <div class="px-4 py-2 self-end bg-slate-100 rounded-l-xl rounded-br-xl">
+                            <div class="px-4 py-2 self-end bg-slate-100 rounded-l-xl rounded-br-xl text-wrap break-all ">
                                 { c.request().to_owned() }
                             </div>
-                            <div class="p-2 self-start">
+                            <div class="p-2 self-start text-wrap break-all ">
                                 { c.response().to_owned() }
                             </div>
                         </div>
@@ -205,8 +205,9 @@ pub fn App() -> impl IntoView {
                                 if input.get_untracked() != new_input {
                                     set_input(new_input);
                                 }
-                            } on:keyup=move |ev| {
-                                if ev.key() == "Enter" && ev.ctrl_key() {
+                            } on:keydown=move |ev| {
+                                if ev.key() == "Enter" {
+                                    ev.prevent_default();
                                     let input = input.get_untracked();
                                     if input.is_empty() {
                                         return;
