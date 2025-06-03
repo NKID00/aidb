@@ -1,0 +1,61 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Retrieve current time
+        run: |
+          echo "TIME=$(date --iso-8601=seconds --utc)" >> ${GITHUB_ENV}
+      - name: Configure git user
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v3
+        id: cargo
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}
+      - uses: actions/cache@v3
+        id: target
+        with:
+          path: |
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo install trunk
+        if: steps.cargo.outputs.cache-hit != 'true'
+      - name: Build
+        run: |
+          trunk build --release
+      - name: Create release
+        run: |
+          gh release delete release --cleanup-tag -y || true
+          sleep 5  # wait until previous release is really gone
+          git tag release
+          git push origin --tags
+          pushd dist
+          zip -qr ../dist.zip *
+          popd
+          gh release create release --latest -n "${{ env.TIME }}" dist.zip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  deploy:
+    needs: build
+    uses: NKID00/nkid00.name/.github/workflows/deploy.yml@master
+    secrets: inherit
