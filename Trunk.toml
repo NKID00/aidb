@@ -1,2 +1,5 @@
 [build]
 public_url = "/g/aidb"
+
+[tools]
+tailwindcss = "4.1.8"
