@@ -40,3 +40,4 @@ futures = "0.3"
 gloo-worker = { version = "0.5", features = ["futures"] }
 serde = { version = "1", features = ["derive"] }
 opendal = { version = "0.53", default-features = false }
+tracing = "0.1"

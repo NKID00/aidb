@@ -1,12 +1,15 @@
 use std::fmt::{Display, Formatter};
 
+use binrw::binrw;
 use serde::{Deserialize, Serialize};
 
+#[binrw]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[brw(little, repr = u8)]
 pub enum DataType {
-    Integer,
-    Real,
-    Text,
+    Integer = 1,
+    Real = 2,
+    Text = 3,
 }
 
 impl DataType {

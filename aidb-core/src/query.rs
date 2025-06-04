@@ -1,29 +1,22 @@
 use eyre::Result;
 
-use crate::{
-    Aidb,
-    data::{DataType, Value},
-    schema::create_table,
-    sql::SqlStmt,
-};
+use crate::{Aidb, data::Value, schema::Column, sql::SqlStmt};
 
 pub type Row = Vec<Value>;
 
-#[derive(Debug)]
-pub struct RowStream;
+pub struct RowStream(pub(crate) Box<dyn Iterator<Item = Row> + Send>);
 
 impl Iterator for RowStream {
     type Item = Row;
 
     fn next(&mut self) -> Option<Self::Item> {
-        None
+        self.0.next()
     }
 }
 
-#[derive(Debug)]
 pub enum Response {
     Rows {
-        columns: Vec<(String, DataType)>,
+        columns: Vec<Column>,
         rows: RowStream,
     },
     Meta {
@@ -31,21 +24,26 @@ pub enum Response {
     },
 }
 
-pub fn dispatch(aidb: &mut Aidb, stmt: SqlStmt) -> Result<Response> {
-    match stmt {
-        SqlStmt::CreateTable { table, columns } => create_table(table, columns),
-        SqlStmt::InsertInto {
-            table,
-            columns,
-            values,
-        } => todo!(),
-        SqlStmt::Select {
-            columns,
-            table,
-            join_on,
-            where_,
-        } => Ok(Response::Meta { affected_rows: 42 }),
-        SqlStmt::Update { table, set, where_ } => todo!(),
-        SqlStmt::DeleteFrom { table, where_ } => todo!(),
+impl Aidb {
+    pub async fn dispatch(self: &mut Aidb, stmt: SqlStmt) -> Result<Response> {
+        match stmt {
+            SqlStmt::ShowTables => self.show_tables().await,
+            SqlStmt::Describe { table } => self.describe(table).await,
+            SqlStmt::CreateTable { table, columns } => self.create_table(table, columns).await,
+            SqlStmt::InsertInto {
+                table,
+                columns,
+                values,
+            } => todo!(),
+            SqlStmt::Select {
+                columns,
+                table,
+                join_on,
+                where_,
+                limit,
+            } => Ok(Response::Meta { affected_rows: 42 }),
+            SqlStmt::Update { table, set, where_ } => todo!(),
+            SqlStmt::DeleteFrom { table, where_ } => todo!(),
+        }
     }
 }

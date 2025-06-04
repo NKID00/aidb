@@ -70,17 +70,17 @@ impl<W: AsyncWrite + Send + Unpin> AsyncMysqlShim<W> for MySQLShim {
         results: QueryResultWriter<'a, W>,
     ) -> Result<(), Self::Error> {
         trace!(query);
-        if query == "select @@version_comment limit 1" {
-            let columns = [Column {
-                table: "".to_owned(),
-                column: "@@version_comment".to_owned(),
-                coltype: ColumnType::MYSQL_TYPE_VAR_STRING,
-                colflags: ColumnFlags::empty(),
-            }];
-            let mut w = results.start(&columns).await?;
-            w.write_row(&["aidb"]).await?;
-            return w.finish().await;
-        }
+        // if query == "select @@version_comment limit 1" {
+        //     let columns = [Column {
+        //         table: "".to_owned(),
+        //         column: "@@version_comment".to_owned(),
+        //         coltype: ColumnType::MYSQL_TYPE_VAR_STRING,
+        //         colflags: ColumnFlags::empty(),
+        //     }];
+        //     let mut w = results.start(&columns).await?;
+        //     w.write_row(&["aidb"]).await?;
+        //     return w.finish().await;
+        // }
         let mut lock = self.core.lock().await;
         match lock.query(query).await {
             Ok(Response::Rows { columns, rows }) => {
@@ -119,15 +119,15 @@ impl<W: AsyncWrite + Send + Unpin> AsyncMysqlShim<W> for MySQLShim {
     }
 }
 
-fn aidb_column_to_mysql(column: (String, DataType)) -> Column {
+fn aidb_column_to_mysql(column: aidb_core::Column) -> Column {
     Column {
         table: "".to_owned(),
-        column: column.0,
+        column: column.name,
         // See https://dev.mysql.com/doc/c-api/8.4/en/c-api-prepared-statement-type-codes.html
-        coltype: match column.1 {
+        coltype: match column.datatype {
             DataType::Integer => ColumnType::MYSQL_TYPE_LONGLONG,
             DataType::Real => ColumnType::MYSQL_TYPE_DOUBLE,
-            DataType::Text => ColumnType::MYSQL_TYPE_BLOB,
+            DataType::Text => ColumnType::MYSQL_TYPE_VAR_STRING,
         },
         colflags: ColumnFlags::empty(),
     }

@@ -12,10 +12,14 @@ use nom::{
 };
 use nom_language::precedence::{Assoc, Operation, binary_op, precedence, unary_op};
 
-use crate::{DataType, Value};
+use crate::{Aidb, DataType, Value};
 
 #[derive(Debug, Clone)]
 pub enum SqlStmt {
+    /// SHOW TABLES
+    ShowTables,
+    /// DESCRIBE | DESC table
+    Describe { table: String },
     /// CREATE TABLE table (column datatype, ...)
     CreateTable {
         table: String,
@@ -33,6 +37,7 @@ pub enum SqlStmt {
         table: Option<String>,
         join_on: Vec<(String, SqlOn)>,
         where_: Option<SqlWhere>,
+        limit: Option<u64>,
     },
     /// UPDATE table SET column = value, ... [WHERE condition]
     Update {
@@ -97,38 +102,40 @@ pub enum SqlWhere {
     Not(Box<SqlWhere>),
 }
 
-pub fn complete(input: impl AsRef<str>) -> String {
-    for (tail, hint) in [
-        ("SELECT 1", "SELECT"),
-        ("FROM a", "FROM"),
-        ("ON a = a", "ON"),
-        ("WHERE a = a", "WHERE"),
-        ("= a", "="),
-        ("LIKE \"\"", "LIKE"),
-        ("AND 1 = 1", "AND"),
-        ("INTO a(a) VALUES (1)", "INTO"),
-        ("VALUES (1)", "VALUES"),
-        ("TABLE a (a INTEGER)", "TABLE"),
-        (")", ")"),
-        (";", ";"),
-    ] {
-        if stmt(&format!("{} {tail}", input.as_ref())).is_ok() {
-            return hint.to_owned();
+impl Aidb {
+    pub fn complete(input: impl AsRef<str>) -> String {
+        for (tail, hint) in [
+            ("SELECT 1", "SELECT"),
+            ("FROM a", "FROM"),
+            ("ON a = a", "ON"),
+            ("WHERE a = a", "WHERE"),
+            ("= a", "="),
+            ("LIKE \"\"", "LIKE"),
+            ("LIMIT 1", "LIMIT"),
+            ("INTO a(a) VALUES (1)", "INTO"),
+            ("VALUES (1)", "VALUES"),
+            ("TABLE a (a INTEGER)", "TABLE"),
+            (")", ")"),
+            (";", ";"),
+        ] {
+            if stmt(&format!("{} {tail}", input.as_ref())).is_ok() {
+                return hint.to_owned();
+            }
         }
+        return "".to_owned();
     }
-    return "".to_owned();
-}
 
-pub fn parse(input: impl AsRef<str>) -> Result<SqlStmt> {
-    match stmt(input.as_ref()) {
-        Ok((remain, stmt)) => {
-            assert!(remain.is_empty());
-            Ok(stmt)
+    pub(crate) fn parse(input: impl AsRef<str>) -> Result<SqlStmt> {
+        match stmt(input.as_ref()) {
+            Ok((remain, stmt)) => {
+                assert!(remain.is_empty());
+                Ok(stmt)
+            }
+            Err(e) => match e {
+                nom::Err::Error(e) => Err(eyre!("SQL invalid")),
+                _ => unreachable!(),
+            },
         }
-        Err(e) => match e {
-            nom::Err::Error(e) => Err(eyre!("SQL invalid")),
-            _ => unreachable!(),
-        },
     }
 }
 
@@ -164,23 +171,23 @@ fn paren<'a, T, E: ParseError<&'a str>>(
 
 type ParseResult<'a, T> = IResult<&'a str, T>;
 
-fn ident(input: &str) -> ParseResult<&str> {
-    recognize((
-        alt((alpha1, tag("_"))),
-        many0_count(alt((alphanumeric1, tag("_")))),
-    ))
+fn ident(input: &str) -> ParseResult<String> {
+    map(
+        recognize((
+            alt((alpha1, tag("_"))),
+            many0_count(alt((alphanumeric1, tag("_")))),
+        )),
+        |ident: &str| ident.to_owned(),
+    )
     .parse(input)
 }
 
 fn col(input: &str) -> ParseResult<SqlCol> {
     alt((
         map(separated_pair(ident, tag("."), ident), |(table, column)| {
-            SqlCol::Full {
-                table: table.to_owned(),
-                column: column.to_owned(),
-            }
+            SqlCol::Full { table, column }
         }),
-        map(ident, |s| SqlCol::Short(s.to_owned())),
+        map(ident, |column| SqlCol::Short(column)),
     ))
     .parse(input)
 }
@@ -188,7 +195,7 @@ fn col(input: &str) -> ParseResult<SqlCol> {
 fn stmt(input: &str) -> ParseResult<SqlStmt> {
     delimited(
         multispace0,
-        alt((create_table, insert_into, select)),
+        alt((show_tables, describe, create_table, insert_into, select)),
         (multispace0, opt(tag(";")), multispace0, eof),
     )
     .parse(input)
@@ -207,10 +214,23 @@ fn datatype(input: &str) -> ParseResult<DataType> {
 fn col_def(input: &str) -> ParseResult<SqlColDef> {
     map(
         separated_pair(ident, multispace1, datatype),
-        |(name, datatype)| SqlColDef {
-            name: name.to_owned(),
-            datatype,
-        },
+        |(name, datatype)| SqlColDef { name, datatype },
+    )
+    .parse(input)
+}
+
+fn show_tables(input: &str) -> ParseResult<SqlStmt> {
+    value(
+        SqlStmt::ShowTables,
+        (kw_preceded("SHOW"), tag_no_case("TABLES")),
+    )
+    .parse(input)
+}
+
+fn describe(input: &str) -> ParseResult<SqlStmt> {
+    map(
+        preceded(alt((kw_preceded("DESCRIBE"), kw_preceded("DESC"))), ident),
+        |table| SqlStmt::Describe { table },
     )
     .parse(input)
 }
@@ -228,10 +248,7 @@ fn create_table(input: &str) -> ParseResult<SqlStmt> {
                 ),
             ),
         ),
-        |(table, columns)| SqlStmt::CreateTable {
-            table: table.to_owned(),
-            columns,
-        },
+        |(table, columns)| SqlStmt::CreateTable { table, columns },
     )
     .parse(input)
 }
@@ -332,7 +349,7 @@ fn insert_into(input: &str) -> ParseResult<SqlStmt> {
             ),
         ),
         |(table, (columns, values))| SqlStmt::InsertInto {
-            table: table.to_owned(),
+            table,
             columns,
             values,
         },
@@ -341,7 +358,7 @@ fn insert_into(input: &str) -> ParseResult<SqlStmt> {
 }
 
 fn from(input: &str) -> ParseResult<String> {
-    map(preceded(kw("FROM"), ident), |table| table.to_owned()).parse(input)
+    map(preceded(kw("FROM"), ident), |table| table).parse(input)
 }
 
 fn join_on(input: &str) -> ParseResult<(String, SqlOn)> {
@@ -356,7 +373,7 @@ fn join_on(input: &str) -> ParseResult<(String, SqlOn)> {
                 ),
             ),
         ),
-        |(table, (lhs, rhs))| (table.to_owned(), SqlOn { lhs, rhs }),
+        |(table, (lhs, rhs))| (table, SqlOn { lhs, rhs }),
     )
     .parse(input)
 }
@@ -422,6 +439,10 @@ fn where_(input: &str) -> ParseResult<SqlWhere> {
     preceded(kw("WHERE"), where_clause).parse(input)
 }
 
+fn limit(input: &str) -> ParseResult<u64> {
+    preceded(kw("LIMIT"), nom::character::complete::u64).parse(input)
+}
+
 fn select(input: &str) -> ParseResult<SqlStmt> {
     map(
         preceded(
@@ -431,13 +452,15 @@ fn select(input: &str) -> ParseResult<SqlStmt> {
                 opt(from),
                 many0(join_on),
                 opt(where_),
+                opt(limit),
             ),
         ),
-        |(columns, table, join_on, where_)| SqlStmt::Select {
+        |(columns, table, join_on, where_, limit)| SqlStmt::Select {
             columns,
             table,
             join_on,
             where_,
+            limit,
         },
     )
     .parse(input)
@@ -452,7 +475,7 @@ mod test {
         assert_eq!(
             format!(
                 "{:?}",
-                parse("CREATE TABLE students (id INTEGER, name TEXT);").unwrap()
+                Aidb::parse("CREATE TABLE students (id INTEGER, name TEXT);").unwrap()
             ),
             r#"CreateTable { table: "students", columns: [SqlColDef { name: "id", datatype: Integer }, SqlColDef { name: "name", datatype: Text }] }"#
         );
@@ -463,7 +486,7 @@ mod test {
         assert_eq!(
             format!(
                 "{:?}",
-                parse(r#"INSERT INTO students(id, name) VALUES (42, "Alice"), (43, "Bob");"#)
+                Aidb::parse(r#"INSERT INTO students(id, name) VALUES (42, "Alice"), (43, "Bob");"#)
                     .unwrap()
             ),
             r#"InsertInto { table: "students", columns: [Short("id"), Short("name")], values: [[Integer(42), Text("Alice")], [Integer(43), Text("Bob")]] }"#
@@ -475,7 +498,7 @@ mod test {
         assert_eq!(
             format!(
                 "{:?}",
-                parse(r#"SELECT students.name, classes.class FROM students JOIN classes ON students.id = classes.student_id WHERE students.name LIKE "张%";"#)
+                Aidb::parse(r#"SELECT students.name, classes.class FROM students JOIN classes ON students.id = classes.student_id WHERE students.name LIKE "张%";"#)
                     .unwrap()
             ),
             r#"Select { columns: [Column(Full { table: "students", column: "name" }), Column(Full { table: "classes", column: "class" })], table: Some("students"), join_on: [("classes", SqlOn { lhs: Full { table: "students", column: "id" }, rhs: Full { table: "classes", column: "student_id" } })], where_: Some(Rel(Like { lhs: Full { table: "students", column: "name" }, rhs: "张%" })) }"#

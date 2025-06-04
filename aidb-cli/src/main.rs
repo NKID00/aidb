@@ -44,11 +44,8 @@ fn init_storage(opendal_scheme: impl AsRef<str>, opendal_config: Vec<String>) ->
     )?)
 }
 
-fn init_core(args: &Args) -> Result<Aidb> {
-    Ok(Aidb::from_op(init_storage(
-        &args.scheme,
-        args.config.clone(),
-    )?))
+async fn init_core(args: &Args) -> Result<Aidb> {
+    Ok(Aidb::from_op(init_storage(&args.scheme, args.config.clone())?).await?)
 }
 
 fn get_shim(core: Arc<Mutex<Aidb>>) -> MySQLShim {
@@ -67,7 +64,7 @@ async fn main() -> Result<()> {
     info!("log level is {}", log_level.to_string());
 
     info!("initializing aidb");
-    let core = Arc::new(Mutex::new(init_core(&args)?));
+    let core = Arc::new(Mutex::new(init_core(&args).await?));
 
     let terminating = Arc::new(Notify::new());
     ctrlc::set_handler({

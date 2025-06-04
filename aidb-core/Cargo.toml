@@ -5,11 +5,13 @@ edition = "2024"
 
 [dependencies]
 archive = { workspace = true }
+binrw = "0.15.0"
 eyre = { workspace = true }
 nom = "8"
 nom-language = "0.1"
 opendal = { workspace = true }
 serde = { workspace = true }
+tracing = { workspace = true }
 
 [features]
 default = ["memory"]

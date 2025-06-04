@@ -144,11 +144,7 @@ pub fn App() -> impl IntoView {
                         set_chat.update(|chat| {
                             chat.respond(format!(
                                 "| {} |",
-                                columns
-                                    .into_iter()
-                                    .map(|(column, _)| column)
-                                    .collect::<Vec<_>>()
-                                    .join(" | ")
+                                columns.into_iter().collect::<Vec<_>>().join(" | ")
                             ))
                         });
                         while let Some(response) = worker.next().await {

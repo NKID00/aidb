@@ -14,7 +14,7 @@ pub enum WorkerRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkerResponse {
     Completion(String),
-    QueryOkColumn(Vec<(String, DataType)>),
+    QueryOkColumn(Vec<String>),
     QueryOkRow(Row),
     QueryOkEnd,
     QueryOkMeta { affected_rows: usize },
@@ -23,18 +23,20 @@ pub enum WorkerResponse {
 
 #[reactor]
 pub async fn Worker(mut scope: ReactorScope<WorkerRequest, WorkerResponse>) {
-    let mut aidb = Aidb::new_memory();
+    let mut aidb = Aidb::new_memory().await;
     while let Some(request) = scope.next().await {
         match request {
             WorkerRequest::Completion(sql) => {
-                let hint = aidb.complete(sql).await;
+                let hint = Aidb::complete(sql);
                 scope.send(WorkerResponse::Completion(hint)).await.unwrap();
             }
             WorkerRequest::Query(sql) => match aidb.query(sql).await {
                 Ok(response) => match response {
                     Response::Rows { columns, rows } => {
                         scope
-                            .send(WorkerResponse::QueryOkColumn(columns))
+                            .send(WorkerResponse::QueryOkColumn(
+                                columns.into_iter().map(|c| c.name).collect(),
+                            ))
                             .await
                             .unwrap();
                         for row in rows {
