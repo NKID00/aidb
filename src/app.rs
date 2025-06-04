@@ -219,7 +219,7 @@ pub fn App() -> impl IntoView {
                                     span.set_text_content(Some(&text));
                                     focus_input();
                                 }
-                                let new_input = text.replace('\u{a0}', " ").to_owned();
+                                let new_input = text.replace('\u{a0}', " ").trim().to_owned();
                                 if input.get_untracked() != new_input {
                                     set_input(new_input);
                                 }

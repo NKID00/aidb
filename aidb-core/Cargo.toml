@@ -7,7 +7,7 @@ edition = "2024"
 archive = { workspace = true }
 eyre = { workspace = true }
 nom = "8"
-nom_locate = "5"
+nom-language = "0.1"
 opendal = { workspace = true }
 serde = { workspace = true }
 

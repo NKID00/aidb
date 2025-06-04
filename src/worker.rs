@@ -1,4 +1,4 @@
-use aidb_core::{Aidb, DataType, Response, Result, Row};
+use aidb_core::{Aidb, DataType, Response, Row};
 
 use futures::{SinkExt, StreamExt};
 use gloo_worker::Registrable;

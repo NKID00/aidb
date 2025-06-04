@@ -4,12 +4,13 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case},
     character::complete::{alpha1, alphanumeric1, multispace0, multispace1, none_of, one_of},
-    combinator::{eof, map, map_opt, map_res, opt, recognize, value},
+    combinator::{eof, fail, map, map_opt, map_res, opt, recognize, value},
     error::ParseError,
     multi::{fold_many0, many0, many0_count, many1, separated_list0, separated_list1},
     number::complete::hex_u32,
     sequence::{delimited, preceded, separated_pair, terminated},
 };
+use nom_language::precedence::{Assoc, Operation, binary_op, precedence, unary_op};
 
 use crate::{DataType, Value};
 
@@ -73,7 +74,7 @@ pub enum SqlColOrExpr {
 }
 
 #[derive(Debug, Clone)]
-pub enum SqlWhere {
+pub enum SqlRel {
     Eq {
         lhs: SqlColOrExpr,
         rhs: SqlColOrExpr,
@@ -86,13 +87,36 @@ pub enum SqlWhere {
         lhs: SqlCol,
         rhs: String,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum SqlWhere {
+    Rel(SqlRel),
     And(Box<SqlWhere>, Box<SqlWhere>),
     Or(Box<SqlWhere>, Box<SqlWhere>),
     Not(Box<SqlWhere>),
 }
 
 pub fn complete(input: impl AsRef<str>) -> String {
-    "hint1".to_owned()
+    for (tail, hint) in [
+        ("SELECT 1", "SELECT"),
+        ("FROM a", "FROM"),
+        ("ON a = a", "ON"),
+        ("WHERE a = a", "WHERE"),
+        ("= a", "="),
+        ("LIKE \"\"", "LIKE"),
+        ("AND 1 = 1", "AND"),
+        ("INTO a(a) VALUES (1)", "INTO"),
+        ("VALUES (1)", "VALUES"),
+        ("TABLE a (a INTEGER)", "TABLE"),
+        (")", ")"),
+        (";", ";"),
+    ] {
+        if stmt(&format!("{} {tail}", input.as_ref())).is_ok() {
+            return hint.to_owned();
+        }
+    }
+    return "".to_owned();
 }
 
 pub fn parse(input: impl AsRef<str>) -> Result<SqlStmt> {
@@ -101,18 +125,23 @@ pub fn parse(input: impl AsRef<str>) -> Result<SqlStmt> {
             assert!(remain.is_empty());
             Ok(stmt)
         }
-        Err(e) => Err(eyre!("SQL parse error: {:?}", e)),
+        Err(e) => match e {
+            nom::Err::Error(e) => Err(eyre!("SQL invalid")),
+            _ => unreachable!(),
+        },
     }
 }
 
 fn kw_preceded<'a, 'b, E: ParseError<&'a str>>(
     kw: &'b str,
-) -> impl Parser<&'a str, Output = (), Error = E> {
-    map((tag_no_case(kw), multispace1), |_| ())
+) -> impl Parser<&'a str, Output = &'a str, Error = E> {
+    delimited(multispace0, tag_no_case(kw), multispace1)
 }
 
-fn kw<'a, 'b, E: ParseError<&'a str>>(kw: &'b str) -> impl Parser<&'a str, Output = (), Error = E> {
-    map((multispace1, tag_no_case(kw), multispace1), |_| ())
+fn kw<'a, 'b, E: ParseError<&'a str>>(
+    kw: &'b str,
+) -> impl Parser<&'a str, Output = &'a str, Error = E> {
+    delimited(multispace1, tag_no_case(kw), multispace1)
 }
 
 fn comma_list0<'a, T, E: ParseError<&'a str>>(
@@ -133,7 +162,9 @@ fn paren<'a, T, E: ParseError<&'a str>>(
     delimited((tag("("), multispace0), parser, (multispace0, tag(")")))
 }
 
-fn ident(input: &str) -> IResult<&str, &str> {
+type ParseResult<'a, T> = IResult<&'a str, T>;
+
+fn ident(input: &str) -> ParseResult<&str> {
     recognize((
         alt((alpha1, tag("_"))),
         many0_count(alt((alphanumeric1, tag("_")))),
@@ -141,7 +172,7 @@ fn ident(input: &str) -> IResult<&str, &str> {
     .parse(input)
 }
 
-fn col(input: &str) -> IResult<&str, SqlCol> {
+fn col(input: &str) -> ParseResult<SqlCol> {
     alt((
         map(separated_pair(ident, tag("."), ident), |(table, column)| {
             SqlCol::Full {
@@ -154,7 +185,7 @@ fn col(input: &str) -> IResult<&str, SqlCol> {
     .parse(input)
 }
 
-fn stmt(input: &str) -> IResult<&str, SqlStmt> {
+fn stmt(input: &str) -> ParseResult<SqlStmt> {
     delimited(
         multispace0,
         alt((create_table, insert_into, select)),
@@ -163,7 +194,7 @@ fn stmt(input: &str) -> IResult<&str, SqlStmt> {
     .parse(input)
 }
 
-fn datatype(input: &str) -> IResult<&str, DataType> {
+fn datatype(input: &str) -> ParseResult<DataType> {
     use DataType::*;
     alt((
         value(Integer, tag_no_case("INTEGER")),
@@ -173,7 +204,7 @@ fn datatype(input: &str) -> IResult<&str, DataType> {
     .parse(input)
 }
 
-fn col_def(input: &str) -> IResult<&str, SqlColDef> {
+fn col_def(input: &str) -> ParseResult<SqlColDef> {
     map(
         separated_pair(ident, multispace1, datatype),
         |(name, datatype)| SqlColDef {
@@ -184,7 +215,7 @@ fn col_def(input: &str) -> IResult<&str, SqlColDef> {
     .parse(input)
 }
 
-fn create_table(input: &str) -> IResult<&str, SqlStmt> {
+fn create_table(input: &str) -> ParseResult<SqlStmt> {
     map(
         preceded(
             (kw_preceded("CREATE"), kw_preceded("TABLE")),
@@ -205,19 +236,19 @@ fn create_table(input: &str) -> IResult<&str, SqlStmt> {
     .parse(input)
 }
 
-fn columns(input: &str) -> IResult<&str, Vec<SqlCol>> {
+fn columns(input: &str) -> ParseResult<Vec<SqlCol>> {
     comma_list1(col).parse(input)
 }
 
-fn integer(input: &str) -> IResult<&str, i64> {
+fn integer(input: &str) -> ParseResult<i64> {
     nom::character::complete::i64(input)
 }
 
-fn decimal(input: &str) -> IResult<&str, &str> {
+fn decimal(input: &str) -> ParseResult<&str> {
     recognize(many1(terminated(one_of("0123456789"), many0(tag("_"))))).parse(input)
 }
 
-fn real(input: &str) -> IResult<&str, f64> {
+fn real(input: &str) -> ParseResult<f64> {
     map_res(
         alt((
             // Case one: .42
@@ -240,7 +271,7 @@ fn real(input: &str) -> IResult<&str, f64> {
     .parse(input)
 }
 
-fn text(input: &str) -> IResult<&str, String> {
+fn text(input: &str) -> ParseResult<String> {
     delimited(
         tag("\""),
         fold_many0(
@@ -274,7 +305,7 @@ fn text(input: &str) -> IResult<&str, String> {
     .parse(input)
 }
 
-fn const_(input: &str) -> IResult<&str, Value> {
+fn const_(input: &str) -> ParseResult<Value> {
     alt((
         value(Value::Null, tag_no_case("NULL")),
         map(integer, |v| Value::Integer(v)),
@@ -284,17 +315,23 @@ fn const_(input: &str) -> IResult<&str, Value> {
     .parse(input)
 }
 
-fn values(input: &str) -> IResult<&str, Vec<Vec<Value>>> {
+fn values(input: &str) -> ParseResult<Vec<Vec<Value>>> {
     comma_list1(paren(comma_list1(const_))).parse(input)
 }
 
-fn insert_into(input: &str) -> IResult<&str, SqlStmt> {
+fn insert_into(input: &str) -> ParseResult<SqlStmt> {
     map(
         preceded(
             (kw_preceded("INSERT"), kw_preceded("INTO")),
-            (ident, paren(columns), preceded(kw("VALUES"), values)),
+            (
+                ident,
+                preceded(
+                    multispace0,
+                    (paren(columns), preceded(kw("VALUES"), values)),
+                ),
+            ),
         ),
-        |(table, columns, values)| SqlStmt::InsertInto {
+        |(table, (columns, values))| SqlStmt::InsertInto {
             table: table.to_owned(),
             columns,
             values,
@@ -303,11 +340,11 @@ fn insert_into(input: &str) -> IResult<&str, SqlStmt> {
     .parse(input)
 }
 
-fn from(input: &str) -> IResult<&str, String> {
+fn from(input: &str) -> ParseResult<String> {
     map(preceded(kw("FROM"), ident), |table| table.to_owned()).parse(input)
 }
 
-fn join_on(input: &str) -> IResult<&str, (String, SqlOn)> {
+fn join_on(input: &str) -> ParseResult<(String, SqlOn)> {
     map(
         preceded(
             kw("JOIN"),
@@ -324,7 +361,7 @@ fn join_on(input: &str) -> IResult<&str, (String, SqlOn)> {
     .parse(input)
 }
 
-fn col_or_const(input: &str) -> IResult<&str, SqlColOrExpr> {
+fn col_or_const(input: &str) -> ParseResult<SqlColOrExpr> {
     alt((
         map(col, |column| SqlColOrExpr::Column(column)),
         map(const_, |v| SqlColOrExpr::Const(v)),
@@ -332,7 +369,7 @@ fn col_or_const(input: &str) -> IResult<&str, SqlColOrExpr> {
     .parse(input)
 }
 
-fn where_clause(input: &str) -> IResult<&str, SqlWhere> {
+fn where_rel(input: &str) -> ParseResult<SqlRel> {
     alt((
         map(
             (
@@ -341,43 +378,60 @@ fn where_clause(input: &str) -> IResult<&str, SqlWhere> {
                 col_or_const,
             ),
             |(lhs, op, rhs)| match op {
-                "=" => SqlWhere::Eq { lhs, rhs },
-                "<=" => SqlWhere::Le { lhs, rhs },
+                "=" => SqlRel::Eq { lhs, rhs },
+                "<=" => SqlRel::Le { lhs, rhs },
                 _ => unreachable!(),
             },
         ),
         map(separated_pair(col, kw("LIKE"), text), |(lhs, rhs)| {
-            SqlWhere::Like { lhs, rhs }
+            SqlRel::Like { lhs, rhs }
         }),
-        map(
-            (
-                where_clause,
-                delimited(
-                    multispace0,
-                    alt((tag_no_case("AND"), tag_no_case("OR"))),
-                    multispace0,
-                ),
-                where_clause,
-            ),
-            |(lhs, op, rhs)| match op.to_uppercase().as_str() {
-                "AND" => SqlWhere::And(Box::new(lhs), Box::new(rhs)),
-                "OR" => SqlWhere::Or(Box::new(lhs), Box::new(rhs)),
-                _ => unreachable!(),
-            },
-        ),
     ))
     .parse(input)
 }
 
-fn where_(input: &str) -> IResult<&str, SqlWhere> {
+fn where_clause(input: &str) -> ParseResult<SqlWhere> {
+    precedence(
+        unary_op(1, kw("NOT")),
+        fail(),
+        alt((
+            binary_op(2, Assoc::Left, kw("AND")),
+            binary_op(2, Assoc::Left, kw("OR")),
+        )),
+        alt((
+            map(where_rel, |rel| SqlWhere::Rel(rel)),
+            delimited(tag("("), where_clause, tag(")")),
+        )),
+        |op: Operation<&str, &str, &str, SqlWhere>| -> Result<SqlWhere> {
+            use nom_language::precedence::Operation::*;
+            match op {
+                Prefix(_, clause) => Ok(SqlWhere::Not(Box::new(clause))),
+                Binary(lhs, op, rhs) => match op.to_uppercase().as_str() {
+                    "AND" => Ok(SqlWhere::And(Box::new(lhs), Box::new(rhs))),
+                    "OR" => Ok(SqlWhere::Or(Box::new(lhs), Box::new(rhs))),
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            }
+        },
+    )
+    .parse(input)
+}
+
+fn where_(input: &str) -> ParseResult<SqlWhere> {
     preceded(kw("WHERE"), where_clause).parse(input)
 }
 
-fn select(input: &str) -> IResult<&str, SqlStmt> {
+fn select(input: &str) -> ParseResult<SqlStmt> {
     map(
         preceded(
             kw_preceded("SELECT"),
-            (comma_list1(col_or_const), opt(from), many0(join_on), opt(where_)),
+            (
+                comma_list1(col_or_const),
+                opt(from),
+                many0(join_on),
+                opt(where_),
+            ),
         ),
         |(columns, table, join_on, where_)| SqlStmt::Select {
             columns,
@@ -412,7 +466,7 @@ mod test {
                 parse(r#"INSERT INTO students(id, name) VALUES (42, "Alice"), (43, "Bob");"#)
                     .unwrap()
             ),
-            r#"InsertInto { table: "students", columns: [Short("id"), Short("name")], values: [[Int(42), Text("Alice")], [Int(43), Text("Bob")]] }"#
+            r#"InsertInto { table: "students", columns: [Short("id"), Short("name")], values: [[Integer(42), Text("Alice")], [Integer(43), Text("Bob")]] }"#
         );
     }
 
@@ -424,7 +478,7 @@ mod test {
                 parse(r#"SELECT students.name, classes.class FROM students JOIN classes ON students.id = classes.student_id WHERE students.name LIKE "张%";"#)
                     .unwrap()
             ),
-            r#"Select { columns: [Full { table: "students", column: "name" }, Full { table: "classes", column: "class" }], table: Some("students"), join_on: [("classes", SqlOn { lhs: Full { table: "students", column: "id" }, rhs: Full { table: "classes", column: "student_id" } })], where_: Some(Like { lhs: Full { table: "students", column: "name" }, rhs: "张%" }) }"#
+            r#"Select { columns: [Column(Full { table: "students", column: "name" }), Column(Full { table: "classes", column: "class" })], table: Some("students"), join_on: [("classes", SqlOn { lhs: Full { table: "students", column: "id" }, rhs: Full { table: "classes", column: "student_id" } })], where_: Some(Rel(Like { lhs: Full { table: "students", column: "name" }, rhs: "张%" })) }"#
         );
     }
 }

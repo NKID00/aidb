@@ -84,7 +84,7 @@ dependencies = [
  "archive",
  "eyre",
  "nom 8.0.0",
- "nom_locate",
+ "nom-language",
  "opendal",
  "serde",
 ]
@@ -440,12 +440,6 @@ dependencies = [
  "quote",
  "syn 1.0.109",
 ]
-
-[[package]]
-name = "bytecount"
-version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ce89b21cab1437276d2650d57e971f9d548a2d9037cc231abdc0562b97498ce"
 
 [[package]]
 name = "byteorder"
@@ -2341,13 +2335,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "nom_locate"
-version = "5.0.0"
+name = "nom-language"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b577e2d69827c4740cba2b52efaad1c4cc7c73042860b199710b3575c68438d"
+checksum = "2de2bc5b451bfedaef92c90b8939a8fff5770bdcc1fafd6239d086aab8fa6b29"
 dependencies = [
- "bytecount",
- "memchr",
  "nom 8.0.0",
 ]
 
