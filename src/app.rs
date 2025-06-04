@@ -141,12 +141,27 @@ pub fn App() -> impl IntoView {
                 };
                 match response {
                     WorkerResponse::QueryOkColumn(columns) => {
-                        set_chat.update(|chat| chat.respond("columns"));
+                        set_chat.update(|chat| {
+                            chat.respond(format!(
+                                "| {} |",
+                                columns
+                                    .into_iter()
+                                    .map(|(column, _)| column)
+                                    .collect::<Vec<_>>()
+                                    .join(" | ")
+                            ))
+                        });
                         while let Some(response) = worker.next().await {
                             match response {
-                                WorkerResponse::QueryOkRow(row) => {
-                                    set_chat.update(|chat| chat.respond("row"))
-                                }
+                                WorkerResponse::QueryOkRow(row) => set_chat.update(|chat| {
+                                    chat.respond(format!(
+                                        "| {} |",
+                                        row.into_iter()
+                                            .map(|value| value.to_string())
+                                            .collect::<Vec<_>>()
+                                            .join(" | ")
+                                    ))
+                                }),
                                 WorkerResponse::QueryOkEnd => break,
                                 WorkerResponse::QueryErr(e) => {
                                     set_chat.update(|chat| chat.respond(e))
@@ -155,6 +170,9 @@ pub fn App() -> impl IntoView {
                             }
                         }
                     }
+                    WorkerResponse::QueryOkMeta { affected_rows } => set_chat.update(|chat| {
+                        chat.respond(format!("Query OK, {} rows affected", affected_rows))
+                    }),
                     WorkerResponse::QueryErr(e) => set_chat.update(|chat| chat.respond(e)),
                     _ => panic!("unexpected response from worker"),
                 }

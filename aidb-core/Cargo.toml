@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+archive = { workspace = true }
 eyre = { workspace = true }
 nom = "8"
 nom_locate = "5"
-opendal = { workspace = true, features = ["services-memory"] }
+opendal = { workspace = true }
 serde = { workspace = true }
+
+[features]
+default = ["memory"]
+memory = ["opendal/services-memory"]

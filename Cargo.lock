@@ -42,7 +42,6 @@ name = "aidb"
 version = "0.1.0"
 dependencies = [
  "aidb-core",
- "archive",
  "console_error_panic_hook",
  "futures",
  "gloo-worker",
@@ -82,6 +81,7 @@ dependencies = [
 name = "aidb-core"
 version = "0.1.0"
 dependencies = [
+ "archive",
  "eyre",
  "nom 8.0.0",
  "nom_locate",

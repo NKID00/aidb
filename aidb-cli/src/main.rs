@@ -45,7 +45,10 @@ fn init_storage(opendal_scheme: impl AsRef<str>, opendal_config: Vec<String>) ->
 }
 
 fn init_core(args: &Args) -> Result<Aidb> {
-    Ok(Aidb::new(init_storage(&args.scheme, args.config.clone())?))
+    Ok(Aidb::from_op(init_storage(
+        &args.scheme,
+        args.config.clone(),
+    )?))
 }
 
 fn get_shim(core: Arc<Mutex<Aidb>>) -> MySQLShim {

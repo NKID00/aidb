@@ -1,4 +1,4 @@
-use aidb_core::{DataType, Response, Result, Row};
+use aidb_core::{Aidb, DataType, Response, Result, Row};
 
 use futures::{SinkExt, StreamExt};
 use gloo_worker::Registrable;
@@ -17,25 +17,41 @@ pub enum WorkerResponse {
     QueryOkColumn(Vec<(String, DataType)>),
     QueryOkRow(Row),
     QueryOkEnd,
+    QueryOkMeta { affected_rows: usize },
     QueryErr(String),
 }
 
 #[reactor]
 pub async fn Worker(mut scope: ReactorScope<WorkerRequest, WorkerResponse>) {
+    let mut aidb = Aidb::new_memory();
     while let Some(request) = scope.next().await {
         match request {
             WorkerRequest::Completion(sql) => {
-                scope
-                    .send(WorkerResponse::Completion("hint".to_owned()))
-                    .await
-                    .unwrap();
+                let hint = aidb.complete(sql).await;
+                scope.send(WorkerResponse::Completion(hint)).await.unwrap();
             }
-            WorkerRequest::Query(sql) => {
-                scope
-                    .send(WorkerResponse::QueryErr("error".to_owned()))
+            WorkerRequest::Query(sql) => match aidb.query(sql).await {
+                Ok(response) => match response {
+                    Response::Rows { columns, rows } => {
+                        scope
+                            .send(WorkerResponse::QueryOkColumn(columns))
+                            .await
+                            .unwrap();
+                        for row in rows {
+                            scope.send(WorkerResponse::QueryOkRow(row)).await.unwrap();
+                        }
+                        scope.send(WorkerResponse::QueryOkEnd).await.unwrap();
+                    }
+                    Response::Meta { affected_rows } => scope
+                        .send(WorkerResponse::QueryOkMeta { affected_rows })
+                        .await
+                        .unwrap(),
+                },
+                Err(e) => scope
+                    .send(WorkerResponse::QueryErr(e.to_string()))
                     .await
-                    .unwrap();
-            }
+                    .unwrap(),
+            },
         }
     }
 }

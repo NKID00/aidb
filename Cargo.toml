@@ -13,7 +13,6 @@ path = "src/worker.rs"
 
 [dependencies]
 aidb-core = { workspace = true }
-archive = { workspace = true }
 console_error_panic_hook = { workspace = true }
 futures = { workspace = true }
 gloo-worker = { workspace = true }

@@ -82,7 +82,7 @@ impl<W: AsyncWrite + Send + Unpin> AsyncMysqlShim<W> for MySQLShim {
             return w.finish().await;
         }
         let mut lock = self.core.lock().await;
-        match lock.query(query) {
+        match lock.query(query).await {
             Ok(Response::Rows { columns, rows }) => {
                 let columns: Vec<_> = columns.into_iter().map(aidb_column_to_mysql).collect();
                 let mut r = results.start(&columns).await?;
