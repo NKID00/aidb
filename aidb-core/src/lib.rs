@@ -20,6 +20,7 @@ use superblock::SuperBlock;
 
 use binrw::{BinRead, BinWrite};
 pub use eyre::Result;
+use eyre::eyre;
 use opendal::{ErrorKind, Operator};
 
 #[cfg(feature = "memory")]
@@ -49,16 +50,13 @@ impl Aidb {
             .layer(LoggingLayer::default())
             .finish();
         let superblock = SuperBlock::default();
-        let mut block = Self::new_memory_block();
-        let mut cursor = Cursor::new(block.as_mut_slice());
-        superblock.write(&mut cursor).unwrap();
         let mut this = Self {
             op,
             superblock,
             cache_block: HashMap::new(),
             cache_schema: HashMap::new(),
         };
-        this.write(0, &block).await.unwrap();
+        this.write_superblock().await.unwrap();
         this
     }
 

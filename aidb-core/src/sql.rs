@@ -11,8 +11,9 @@ use nom::{
     sequence::{delimited, preceded, separated_pair, terminated},
 };
 use nom_language::precedence::{Assoc, Operation, binary_op, precedence, unary_op};
+use tracing::trace;
 
-use crate::{Aidb, DataType, Value};
+use crate::{Aidb, Column, DataType, Value};
 
 #[derive(Debug, Clone)]
 pub enum SqlStmt {
@@ -21,10 +22,7 @@ pub enum SqlStmt {
     /// DESCRIBE | DESC table
     Describe { table: String },
     /// CREATE TABLE table (column datatype, ...)
-    CreateTable {
-        table: String,
-        columns: Vec<SqlColDef>,
-    },
+    CreateTable { table: String, columns: Vec<Column> },
     /// INSERT INTO table [(column, ...)] VALUES value, ...
     InsertInto {
         table: String,
@@ -33,7 +31,7 @@ pub enum SqlStmt {
     },
     /// SELECT column, ... [FROM table] [JOIN table ON condition ...] [WHERE condition]
     Select {
-        columns: Vec<SqlColOrExpr>,
+        columns: Vec<SqlSelectTarget>,
         table: Option<String>,
         join_on: Vec<(String, SqlOn)>,
         where_: Option<SqlWhere>,
@@ -53,12 +51,6 @@ pub enum SqlStmt {
 }
 
 #[derive(Debug, Clone)]
-pub struct SqlColDef {
-    pub name: String,
-    pub datatype: DataType,
-}
-
-#[derive(Debug, Clone)]
 pub enum SqlCol {
     /// implicit table name
     Short(String),
@@ -70,6 +62,14 @@ pub enum SqlCol {
 pub struct SqlOn {
     pub lhs: SqlCol,
     pub rhs: SqlCol,
+}
+
+#[derive(Debug, Clone)]
+pub enum SqlSelectTarget {
+    Column(SqlCol),
+    Const(Value),
+    Wildcard,
+    Variable(String),
 }
 
 #[derive(Debug, Clone)]
@@ -132,7 +132,10 @@ impl Aidb {
                 Ok(stmt)
             }
             Err(e) => match e {
-                nom::Err::Error(e) => Err(eyre!("SQL invalid")),
+                nom::Err::Error(e) => {
+                    trace!(?e);
+                    Err(eyre!("SQL invalid"))
+                }
                 _ => unreachable!(),
             },
         }
@@ -149,12 +152,6 @@ fn kw<'a, 'b, E: ParseError<&'a str>>(
     kw: &'b str,
 ) -> impl Parser<&'a str, Output = &'a str, Error = E> {
     delimited(multispace1, tag_no_case(kw), multispace1)
-}
-
-fn comma_list0<'a, T, E: ParseError<&'a str>>(
-    parser: impl Parser<&'a str, Output = T, Error = E>,
-) -> impl Parser<&'a str, Output = Vec<T>, Error = E> {
-    separated_list0((multispace0, tag(","), multispace0), parser)
 }
 
 fn comma_list1<'a, T, E: ParseError<&'a str>>(
@@ -204,17 +201,47 @@ fn stmt(input: &str) -> ParseResult<SqlStmt> {
 fn datatype(input: &str) -> ParseResult<DataType> {
     use DataType::*;
     alt((
-        value(Integer, tag_no_case("INTEGER")),
-        value(Real, tag_no_case("REAL")),
-        value(Text, tag_no_case("TEXT")),
+        value(
+            Integer,
+            alt((
+                tag_no_case("INTEGER"),
+                tag_no_case("INT"),
+                tag_no_case("BIGINT"),
+                tag_no_case("SMALLINT"),
+            )),
+        ),
+        value(
+            Real,
+            alt((
+                tag_no_case("REAL"),
+                tag_no_case("FLOAT"),
+                tag_no_case("DOUBLE"),
+            )),
+        ),
+        alt((
+            value(Text, tag_no_case("TEXT")),
+            value(
+                Text,
+                (
+                    opt(tag_no_case("VAR")),
+                    tag_no_case("CHAR"),
+                    multispace0,
+                    tag("("),
+                    multispace0,
+                    decimal,
+                    multispace0,
+                    tag(")"),
+                ),
+            ),
+        )),
     ))
     .parse(input)
 }
 
-fn col_def(input: &str) -> ParseResult<SqlColDef> {
+fn col_def(input: &str) -> ParseResult<Column> {
     map(
         separated_pair(ident, multispace1, datatype),
-        |(name, datatype)| SqlColDef { name, datatype },
+        |(name, datatype)| Column { name, datatype },
     )
     .parse(input)
 }
@@ -443,12 +470,24 @@ fn limit(input: &str) -> ParseResult<u64> {
     preceded(kw("LIMIT"), nom::character::complete::u64).parse(input)
 }
 
+fn select_target(input: &str) -> ParseResult<SqlSelectTarget> {
+    alt((
+        map(col, |column| SqlSelectTarget::Column(column)),
+        map(const_, |v| SqlSelectTarget::Const(v)),
+        value(SqlSelectTarget::Wildcard, tag("*")),
+        map(recognize((alt((tag("@@"), tag("@"))), ident)), |variable| {
+            SqlSelectTarget::Variable(variable.to_owned())
+        }),
+    ))
+    .parse(input)
+}
+
 fn select(input: &str) -> ParseResult<SqlStmt> {
     map(
         preceded(
             kw_preceded("SELECT"),
             (
-                comma_list1(col_or_const),
+                comma_list1(select_target),
                 opt(from),
                 many0(join_on),
                 opt(where_),
