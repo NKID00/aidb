@@ -1,11 +1,47 @@
 mod worker;
 
+use std::{
+    collections::BTreeMap,
+    hash::{DefaultHasher, Hash, Hasher},
+};
+
 use crate::worker::{Worker, WorkerRequest, WorkerResponse};
 
+use aidb_core::BlockIoLog;
 use futures::{SinkExt, StreamExt};
 use gloo_worker::Spawnable;
 use leptos::{html, logging::log, prelude::*, task::spawn_local};
 use wasm_bindgen::prelude::*;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum BlockStatus {
+    Normal,
+    Read,
+    Written,
+}
+
+#[derive(Debug, Clone)]
+struct BlockList {
+    files: BTreeMap<usize, BlockStatus>,
+}
+
+impl BlockList {
+    fn new() -> Self {
+        Self {
+            files: (0..1000).map(|i| (i, BlockStatus::Normal)).collect(),
+        }
+    }
+
+    fn update(&mut self, log: BlockIoLog) {
+        use BlockStatus::*;
+        for b in log.read {
+            self.files.insert(b, Read);
+        }
+        for b in log.written {
+            self.files.insert(b, Written);
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct Chat {
@@ -21,18 +57,6 @@ impl Chat {
             request,
             response: "".to_owned(),
         }
-    }
-
-    pub fn id(&self) -> usize {
-        self.id
-    }
-
-    pub fn request(&self) -> &str {
-        &self.request
-    }
-
-    pub fn response(&self) -> &str {
-        &self.response
     }
 
     fn respond(&mut self, id: usize, response: impl AsRef<str>) {
@@ -75,20 +99,15 @@ impl ChatHistory {
     }
 }
 
-impl From<ChatHistory> for Vec<Chat> {
-    fn from(value: ChatHistory) -> Self {
-        value.chats
-    }
-}
-
 #[component]
 pub fn App() -> impl IntoView {
     let worker = Worker::spawner().spawn("./worker.js");
 
+    let (blocks, set_blocks) = signal(BlockList::new());
     let (chat, set_chat) = signal(ChatHistory::new());
     let (input, set_input) = signal(String::new());
     let (hint, set_hint) = signal("".to_string());
-    let input_element = NodeRef::<html::Span>::new();
+    let input_ref = NodeRef::<html::Code>::new();
 
     Effect::new({
         let worker = worker.fork();
@@ -113,11 +132,11 @@ pub fn App() -> impl IntoView {
     });
 
     let focus_input = move || {
-        let span = input_element.get_untracked().unwrap();
-        span.focus().unwrap();
+        let input_element = input_ref.get_untracked().unwrap();
+        input_element.focus().unwrap();
         let selection = window().get_selection().unwrap().unwrap();
-        if let Some(text) = span.child_nodes().item(0) {
-            let offset = span.text_content().unwrap().chars().count() as u32;
+        if let Some(text) = input_element.child_nodes().item(0) {
+            let offset = input_element.text_content().unwrap().chars().count() as u32;
             if offset > 0 {
                 log!("len = {}", offset);
                 selection
@@ -126,7 +145,7 @@ pub fn App() -> impl IntoView {
                 return;
             }
         }
-        selection.set_position(Some(&span)).unwrap();
+        selection.set_position(Some(&input_element)).unwrap();
     };
 
     let submit_input = move |input: String| {
@@ -140,34 +159,32 @@ pub fn App() -> impl IntoView {
                     panic!("worker exited unexpectedly");
                 };
                 match response {
-                    WorkerResponse::QueryOkColumn(columns) => {
+                    WorkerResponse::QueryOkRows { columns, rows, log } => {
                         set_chat.update(|chat| {
-                            chat.respond(format!(
-                                "| {} |",
-                                columns.into_iter().collect::<Vec<_>>().join(" | ")
-                            ))
+                            chat.respond(
+                                format!(
+                                    "| {} |\n",
+                                    columns.into_iter().collect::<Vec<_>>().join(" | ")
+                                ) + &rows
+                                    .into_iter()
+                                    .map(|row| {
+                                        format!(
+                                            "| {} |",
+                                            row.into_iter()
+                                                .map(|value| value.to_string())
+                                                .collect::<Vec<_>>()
+                                                .join(" | ")
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            )
                         });
-                        while let Some(response) = worker.next().await {
-                            match response {
-                                WorkerResponse::QueryOkRow(row) => set_chat.update(|chat| {
-                                    chat.respond(format!(
-                                        "| {} |",
-                                        row.into_iter()
-                                            .map(|value| value.to_string())
-                                            .collect::<Vec<_>>()
-                                            .join(" | ")
-                                    ))
-                                }),
-                                WorkerResponse::QueryOkEnd => break,
-                                WorkerResponse::QueryErr(e) => {
-                                    set_chat.update(|chat| chat.respond(e))
-                                }
-                                _ => panic!("unexpected response from worker"),
-                            }
-                        }
+                        set_blocks.update(|bl| bl.update(log));
                     }
-                    WorkerResponse::QueryOkMeta { affected_rows } => set_chat.update(|chat| {
-                        chat.respond(format!("Query OK, {} rows affected", affected_rows))
+                    WorkerResponse::QueryOkMeta { affected_rows, log } => set_chat.update(|chat| {
+                        chat.respond(format!("Query OK, {affected_rows} rows affected"));
+                        set_blocks.update(|bl| bl.update(log));
                     }),
                     WorkerResponse::QueryErr(e) => set_chat.update(|chat| chat.respond(e)),
                     _ => panic!("unexpected response from worker"),
@@ -177,9 +194,26 @@ pub fn App() -> impl IntoView {
     };
 
     view! {
-        <div class="flex-1 flex flex-row w-full items-start">
-            <div class="w-[40%] h-[100vh] sticky top-0 bg-sky-50 flex justify-center items-center">
-                <h2> "OPFS Explorer" </h2>
+        <div class="flex-1 flex flex-row w-full items-start divide-solid divide-x-1 divide-slate-300">
+            <div class="w-[25%] h-[100vh] sticky top-0 flex flex-col justify-start items-center">
+                <h2 class="m-4 text-lg"> "Blocks" </h2>
+                <div class="z-0 grid grid-cols-8 gap-2 justify-start justify-items-center content-start place-content-center overflow-hidden">
+                    <For each=move || { blocks().files.clone() } key=|f| {
+                        let mut hasher = DefaultHasher::new();
+                        f.hash(&mut hasher);
+                        hasher.finish()
+                    } children={ |(name, status)| { view! {
+                        <div class={ "w-10 h-10 flex justify-center items-center rounded ".to_owned() + match status {
+                            BlockStatus::Normal => "bg-slate-50",
+                            BlockStatus::Read => "bg-sky-100",
+                            BlockStatus::Written => "bg-red-100",
+                        } }> <code> { name } </code> </div>
+                    } } } />
+                </div>
+                <div class="m-8 self-stretch flex flex-row justify-stretch items-center gap-2">
+                    <button class="flex-1 px-4 py-2 bg-gray-200 hover:bg-gray-300 active:bg-gray-400 rounded"> "Save" </button>
+                    <button class="flex-1 px-4 py-2 bg-gray-200 hover:bg-gray-300 active:bg-gray-400 rounded"> "Load" </button>
+                </div>
             </div>
             <div class="min-h-[100vh] flex-1 flex flex-col justify-start items-stretch">
                 <div class="px-8 py-4 sticky top-0 z-30 bg-white flex flex-col justify-start items-start">
@@ -187,15 +221,15 @@ pub fn App() -> impl IntoView {
                     <h3> { env!("CARGO_PKG_VERSION") } </h3>
                 </div>
                 <div class="p-8 flex-1 z-0 flex flex-col gap-4 justify-start items-stretch [&>div:first-child>hr]:hidden">
-                    <For each=move || { Into::<Vec<Chat>>::into(chat().clone()) } key=Chat::id children={ |c| { view! {
+                    <For each=move || { chat().chats.clone() } key=|c| { c.id } children={ |c| { view! {
                         <div class="flex flex-col justify-start">
                             <hr class="my-8 border-slate-100" />
-                            <div class="px-4 py-2 self-end bg-slate-100 rounded-l-xl rounded-br-xl text-wrap break-all ">
-                                { c.request().to_owned() }
-                            </div>
-                            <div class="p-2 self-start text-wrap break-all ">
-                                { c.response().to_owned() }
-                            </div>
+                            <pre class="px-4 py-2 self-end bg-slate-100 rounded-l-xl rounded-br-xl text-wrap break-all ">
+                                { c.request.clone() }
+                            </pre>
+                            <pre class="p-2 self-start text-wrap break-all ">
+                                { c.response.clone() }
+                            </pre>
                         </div>
                     } } } />
                 </div>
@@ -205,14 +239,14 @@ pub fn App() -> impl IntoView {
                             ev.prevent_default();
                             focus_input();
                         }>
-                            <span class="h-auto text-wrap break-all outline-none" contenteditable node_ref=input_element on:mousedown=|ev| {
+                            <code class="h-auto text-wrap break-all outline-none" contenteditable node_ref=input_ref on:mousedown=|ev| {
                                 ev.stop_propagation();
                             } on:input=move |_| {
-                                let span = input_element.get_untracked().unwrap();
-                                let mut text = span.text_content().unwrap();
+                                let input_element = input_ref.get_untracked().unwrap();
+                                let mut text = input_element.text_content().unwrap();
                                 if text.contains('\u{feff}') {  // first character typed
                                     text.retain(|c| c != '\u{feff}');
-                                    span.set_text_content(Some(&text));
+                                    input_element.set_text_content(Some(&text));
                                     focus_input();
                                 }
                                 let new_input = text.replace('\u{a0}', " ").trim().to_owned();
@@ -226,16 +260,16 @@ pub fn App() -> impl IntoView {
                                     if input.is_empty() {
                                         return;
                                     }
-                                    let span = input_element.get_untracked().unwrap();
-                                    span.set_text_content(Some(""));
+                                    let input_element = input_ref.get_untracked().unwrap();
+                                    input_element.set_text_content(Some(""));
                                     set_input("".to_owned());
                                     submit_input(input);
                                 }
                             }>
                                 "\u{feff}"  // ZERO WIDTH NO-BREAK SPACE to make caret visible
-                            </span>
-                            <span> "\u{00a0}" </span>
-                            <span class="text-gray-400" on:click=move |_| focus_input()> { hint } </span>
+                            </code>
+                            <code> "\u{00a0}" </code>
+                            <code class="text-gray-400" on:click=move |_| focus_input()> { hint } </code>
                         </div>
                     </div>
                     <div class="w-full h-full absolute bottom-0 z-10 bg-linear-to-b from-white/0 to-white to-30%" />

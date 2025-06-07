@@ -122,7 +122,7 @@ impl Aidb {
                 return hint.to_owned();
             }
         }
-        return "".to_owned();
+        "".to_owned()
     }
 
     pub(crate) fn parse(input: impl AsRef<str>) -> Result<SqlStmt> {
@@ -325,9 +325,9 @@ fn text(input: &str) -> ParseResult<String> {
 fn const_(input: &str) -> ParseResult<Value> {
     alt((
         value(Value::Null, tag_no_case("NULL")),
-        map(integer, |v| Value::Integer(v)),
-        map(real, |v| Value::Real(v)),
-        map(text, |v| Value::Text(v)),
+        map(integer, Value::Integer),
+        map(real, Value::Real),
+        map(text, Value::Text),
     ))
     .parse(input)
 }
@@ -380,8 +380,8 @@ fn join_on(input: &str) -> ParseResult<(String, SqlOn)> {
 
 fn col_or_const(input: &str) -> ParseResult<SqlColOrExpr> {
     alt((
-        map(col, |column| SqlColOrExpr::Column(column)),
-        map(const_, |v| SqlColOrExpr::Const(v)),
+        map(col, SqlColOrExpr::Column),
+        map(const_, SqlColOrExpr::Const),
     ))
     .parse(input)
 }
@@ -416,7 +416,7 @@ fn where_clause(input: &str) -> ParseResult<SqlWhere> {
             binary_op(2, Assoc::Left, kw("OR")),
         )),
         alt((
-            map(where_rel, |rel| SqlWhere::Rel(rel)),
+            map(where_rel, SqlWhere::Rel),
             delimited(tag("("), where_clause, tag(")")),
         )),
         |op: Operation<&str, &str, &str, SqlWhere>| -> Result<SqlWhere> {

@@ -1,15 +1,15 @@
 use opendal::{Operator, Result};
 use tracing::{error, warn};
 
-use crate::{Aidb, BLOCK_SIZE, Block};
+use crate::{Aidb, BLOCK_SIZE, Block, BlockIndex};
 
 impl Aidb {
     pub fn new_memory_block() -> Box<Block> {
         vec![0; BLOCK_SIZE].into_boxed_slice().try_into().unwrap()
     }
 
-    pub async fn read(&mut self, index: u64) -> Result<Box<Block>> {
-        let buffer = self.op.read(&format!("{}", index)).await?;
+    pub async fn read(&mut self, index: BlockIndex) -> Result<Box<Block>> {
+        let buffer = self.op.read(&index.to_string()).await?;
         let mut v = buffer.to_vec();
         if v.len() < BLOCK_SIZE {
             warn!("file size is smaller than block size, padding with zero");
@@ -20,8 +20,8 @@ impl Aidb {
         Ok(v.into_boxed_slice().try_into().unwrap())
     }
 
-    pub async fn write(&mut self, index: u64, block: &Block) -> Result<()> {
-        self.op.write(&format!("{}", index), block.to_vec()).await?;
+    pub async fn write(&mut self, index: BlockIndex, block: &Block) -> Result<()> {
+        self.op.write(&index.to_string(), block.to_vec()).await?;
         Ok(())
     }
 }

@@ -1,4 +1,4 @@
-use aidb_core::{Aidb, DataType, Response, Row};
+use aidb_core::{Aidb, BlockIoLog, DataType, Response, Row};
 
 use futures::{SinkExt, StreamExt};
 use gloo_worker::Registrable;
@@ -14,10 +14,15 @@ pub enum WorkerRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkerResponse {
     Completion(String),
-    QueryOkColumn(Vec<String>),
-    QueryOkRow(Row),
-    QueryOkEnd,
-    QueryOkMeta { affected_rows: usize },
+    QueryOkRows {
+        columns: Vec<String>,
+        rows: Vec<Row>,
+        log: BlockIoLog,
+    },
+    QueryOkMeta {
+        affected_rows: usize,
+        log: BlockIoLog,
+    },
     QueryErr(String),
 }
 
@@ -30,22 +35,20 @@ pub async fn Worker(mut scope: ReactorScope<WorkerRequest, WorkerResponse>) {
                 let hint = Aidb::complete(sql);
                 scope.send(WorkerResponse::Completion(hint)).await.unwrap();
             }
-            WorkerRequest::Query(sql) => match aidb.query(sql).await {
-                Ok(response) => match response {
+            WorkerRequest::Query(sql) => match aidb.query_log_blocks(sql).await {
+                Ok((response, log)) => match response {
                     Response::Rows { columns, rows } => {
                         scope
-                            .send(WorkerResponse::QueryOkColumn(
-                                columns.into_iter().map(|c| c.name).collect(),
-                            ))
+                            .send(WorkerResponse::QueryOkRows {
+                                columns: columns.into_iter().map(|c| c.name).collect(),
+                                rows: rows.collect(),
+                                log,
+                            })
                             .await
                             .unwrap();
-                        for row in rows {
-                            scope.send(WorkerResponse::QueryOkRow(row)).await.unwrap();
-                        }
-                        scope.send(WorkerResponse::QueryOkEnd).await.unwrap();
                     }
                     Response::Meta { affected_rows } => scope
-                        .send(WorkerResponse::QueryOkMeta { affected_rows })
+                        .send(WorkerResponse::QueryOkMeta { affected_rows, log })
                         .await
                         .unwrap(),
                 },

@@ -11,6 +11,7 @@ use std::{
     io::{Cursor, Read, Write},
 };
 
+pub use cache::BlockIoLog;
 pub use data::{DataType, Value};
 pub use query::{Response, Row, RowStream};
 pub use schema::Column;
@@ -87,6 +88,15 @@ impl Aidb {
 
     pub async fn query(&mut self, sql: impl AsRef<str>) -> Result<Response> {
         self.dispatch(Self::parse(sql)?).await
+    }
+
+    pub async fn query_log_blocks(
+        &mut self,
+        sql: impl AsRef<str>,
+    ) -> Result<(Response, BlockIoLog)> {
+        self.reset_block_io_log();
+        let result = self.dispatch(Self::parse(sql)?).await;
+        result.map(|r| (r, self.get_block_io_log()))
     }
 
     pub async fn save_archive<W: Write>(&mut self, w: W) -> Result<W> {
