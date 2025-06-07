@@ -100,6 +100,7 @@ impl<W: AsyncWrite + Send + Unpin> AsyncMysqlShim<W> for MySQLShim {
                     .await?;
             }
             Err(e) => {
+                trace!(?e);
                 results
                     .error(GENERAL_ERROR, e.to_string().as_bytes())
                     .await?;

@@ -8,7 +8,6 @@ use crate::BlockIndex;
 pub struct SuperBlock {
     pub next_empty_block: BlockIndex,
     pub first_schema_block: BlockIndex,
-    pub first_data_block: BlockIndex,
     pub first_journal_block: BlockIndex,
 }
 
@@ -17,7 +16,6 @@ impl Default for SuperBlock {
         Self {
             next_empty_block: 1,
             first_schema_block: 0,
-            first_data_block: 0,
             first_journal_block: 0,
         }
     }

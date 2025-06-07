@@ -1,4 +1,5 @@
 use eyre::Result;
+use eyre::eyre;
 
 use crate::{Aidb, data::Value, schema::Column, sql::SqlStmt};
 
@@ -34,7 +35,7 @@ impl Aidb {
                 table,
                 columns,
                 values,
-            } => todo!(),
+            } => self.insert_into(table, columns, values).await,
             SqlStmt::Select {
                 columns,
                 table,

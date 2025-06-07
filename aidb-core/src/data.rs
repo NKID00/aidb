@@ -1,7 +1,10 @@
 use std::fmt::{Display, Formatter};
 
 use binrw::binrw;
+use eyre::Result;
 use serde::{Deserialize, Serialize};
+
+use crate::{Aidb, Response, sql::SqlCol};
 
 #[binrw]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,5 +62,16 @@ impl Display for Value {
             Value::Real(v) => write!(f, "{v}"),
             Value::Text(v) => write!(f, "{}", v.escape_debug()),
         }
+    }
+}
+
+impl Aidb {
+    pub(crate) async fn insert_into(
+        &mut self,
+        table: String,
+        columns: Vec<SqlCol>,
+        values: Vec<Vec<Value>>,
+    ) -> Result<Response> {
+        todo!()
     }
 }
