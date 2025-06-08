@@ -26,7 +26,7 @@ pub enum SqlStmt {
     /// INSERT INTO table [(column, ...)] VALUES value, ...
     InsertInto {
         table: String,
-        columns: Vec<SqlCol>,
+        columns: Vec<String>,
         values: Vec<Vec<Value>>,
     },
     /// SELECT column, ... [FROM table] [JOIN table ON condition ...] [WHERE condition]
@@ -371,7 +371,7 @@ fn insert_into(input: &str) -> ParseResult<SqlStmt> {
                 ident,
                 preceded(
                     multispace0,
-                    (paren(columns), preceded(kw("VALUES"), values)),
+                    (paren(comma_list1(ident)), preceded(kw("VALUES"), values)),
                 ),
             ),
         ),

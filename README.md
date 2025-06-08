@@ -40,6 +40,24 @@ There are four crates in this workspace:
 
 Storage backend uses Apache OpenDAL.
 
+### Block layout
+
+All data are stored in little endian.
+
+There are 5 types of blocks: super block, schema block, data block, text block and index block
+
+- Super block: see struct `SuperBlock` in `aidb-core/src/superblock.rs`
+- Schema block: see struct `Schema` in `aidb-core/src/schema.rs`
+- Data block: header see struct `DataHeader` in `aidb-core/src/data.rs`, row-first packed data storage, each row is stored as 1 byte columns count (non-positive means empty row) followed by packed values, order of columns is the same as table definition, columns are stored as a 1 byte type tag (0 - null, 1 - integer, 2 - real, 3 - text) followed by actual data:
+  - Integer 8 bytes two's complement
+  - Real 8 bytes IEEE 754
+  - Texts 8 bytes length (in bytes) followed by either UTF-8 (if length is no greater than 8) or text block index (8 bytes)
+- Text block: next text block index (8 bytes) followed by UTF-8
+- Index block: b+ tree or hash index
+  - B+ Tree: WIP
+  - Hash: WIP
+
+
 #### Info for lawyers
 
 <sup>

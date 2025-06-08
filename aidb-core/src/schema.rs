@@ -1,5 +1,5 @@
 use binrw::{BinRead, BinWrite, binrw};
-use eyre::{OptionExt, Result, eyre};
+use eyre::{Result, eyre};
 
 use crate::{Aidb, BlockIndex, DataType, Response, RowStream, Value};
 
@@ -20,9 +20,11 @@ pub struct Schema {
     #[bw(calc = columns.len() as u64)]
     columns_len: u64,
     #[br(count = columns_len)]
-    columns: Vec<Column>,
-    row_block: BlockIndex,
-    index_block: BlockIndex,
+    pub(crate) columns: Vec<Column>,
+    #[brw(calc = 1)]
+    pub(crate) row_length: u64,
+    pub(crate) data_block: BlockIndex,
+    pub(crate) index_block: BlockIndex,
 }
 
 #[binrw]
@@ -43,10 +45,7 @@ impl Aidb {
         let mut schema_block_index = self.superblock.first_schema_block;
         let mut tables = vec![];
         while schema_block_index > 0 {
-            let mut block = self
-                .get_block(schema_block_index)
-                .await
-                .ok_or_eyre("block not found, database corrupted")?;
+            let mut block = self.get_block(schema_block_index).await?;
             let mut schema = Schema::read(&mut block.cursor())?;
             schema.block_index = schema_block_index;
             tables.push(schema.name.clone());
@@ -65,10 +64,7 @@ impl Aidb {
     }
 
     pub async fn describe(self: &mut Aidb, table: String) -> Result<Response> {
-        let schema = self
-            .get_schema(&table)
-            .await
-            .ok_or_eyre("table not found")?;
+        let schema = self.get_schema(&table).await?;
         let r = Response::Rows {
             columns: vec![
                 Column {
@@ -103,16 +99,13 @@ impl Aidb {
         table: String,
         columns: Vec<Column>,
     ) -> Result<BlockIndex> {
-        let (index, mut block) = self
-            .new_block()
-            .await
-            .ok_or_eyre("failed to create block")?;
+        let (index, mut block) = self.new_block().await;
         let schema = Schema {
             block_index: index,
             next_schema_block: 0,
             name: table.clone(),
             columns,
-            row_block: 0,
+            data_block: 0,
             index_block: 0,
         };
         schema.write(&mut block.cursor())?;
@@ -136,10 +129,7 @@ impl Aidb {
             return Ok(Response::Meta { affected_rows: 0 });
         }
         loop {
-            let mut block = self
-                .get_block(schema_block_index)
-                .await
-                .ok_or_eyre("block not found, database corrupted")?;
+            let mut block = self.get_block(schema_block_index).await?;
             let mut schema = Schema::read(&mut block.cursor())?;
             schema.block_index = schema_block_index;
             if schema.name == table {
@@ -159,11 +149,11 @@ impl Aidb {
         }
     }
 
-    pub(crate) async fn get_schema(self: &mut Aidb, table: &str) -> Option<Box<Schema>> {
+    pub(crate) async fn get_schema(self: &mut Aidb, table: &str) -> Result<Box<Schema>> {
         if let Some(schema) = self.schemas.remove(table) {
-            return Some(schema);
+            return Ok(schema);
         }
-        self.load_schema(table).await.ok()
+        self.load_schema(table).await
     }
 
     pub(crate) fn put_schema(self: &mut Aidb, table: String, schema: Box<Schema>) {
@@ -175,10 +165,7 @@ impl Aidb {
     }
 
     pub async fn save_schema(&mut self, schema: &Schema) -> Result<()> {
-        let mut block = self
-            .get_block(schema.block_index)
-            .await
-            .ok_or_eyre("invalid schema.block_index")?;
+        let mut block = self.get_block(schema.block_index).await?;
         schema.write(&mut block.cursor())?;
         self.put_block(schema.block_index, block);
         self.mark_block_dirty(schema.block_index);
@@ -188,10 +175,7 @@ impl Aidb {
     pub async fn load_schema(&mut self, table: &str) -> Result<Box<Schema>> {
         let mut schema_block_index = self.superblock.first_schema_block;
         while schema_block_index > 0 {
-            let mut block = self
-                .get_block(schema_block_index)
-                .await
-                .ok_or_eyre("block not found, database corrupted")?;
+            let mut block = self.get_block(schema_block_index).await?;
             let mut schema = Schema::read(&mut block.cursor())?;
             schema.block_index = schema_block_index;
             self.put_block(schema_block_index, block);

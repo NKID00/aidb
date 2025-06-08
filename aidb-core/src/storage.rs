@@ -33,18 +33,18 @@ pub struct BlockIoLog {
 }
 
 impl Aidb {
-    pub(crate) async fn new_block(self: &mut Aidb) -> Option<(BlockIndex, Block)> {
+    pub(crate) async fn new_block(self: &mut Aidb) -> (BlockIndex, Block) {
         let index = self.superblock.next_empty_block;
         self.superblock.next_empty_block += 1;
         self.mark_superblock_dirty();
-        Some((index, Self::new_volatile_block()))
+        (index, Self::new_volatile_block())
     }
 
-    pub(crate) async fn get_block(self: &mut Aidb, index: BlockIndex) -> Option<Block> {
+    pub(crate) async fn get_block(self: &mut Aidb, index: BlockIndex) -> Result<Block> {
         if let Some(b) = self.blocks.remove(&index) {
-            return Some(b);
+            return Ok(b);
         }
-        self.read_physical(index).await.ok()
+        Ok(self.read_physical(index).await?)
     }
 
     pub(crate) fn put_block(self: &mut Aidb, index: BlockIndex, block: Block) {

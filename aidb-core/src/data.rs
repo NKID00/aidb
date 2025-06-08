@@ -1,13 +1,20 @@
-use std::fmt::{Display, Formatter};
+use std::{
+    fmt::{Display, Formatter},
+    io::{Cursor, Write},
+};
 
-use binrw::binrw;
-use eyre::Result;
+use binrw::{BinRead, BinWrite, binrw};
+use eyre::{OptionExt, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::{Aidb, Response, sql::SqlCol};
+use crate::{
+    Aidb, Column, Response, Row,
+    sql::SqlCol,
+    storage::{BLOCK_SIZE, BlockIndex},
+};
 
 #[binrw]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[brw(little, repr = u8)]
 pub enum DataType {
     Integer = 1,
@@ -21,6 +28,14 @@ impl DataType {
             DataType::Integer => Value::Integer(0),
             DataType::Real => Value::Real(0f64),
             DataType::Text => Value::Text("".to_owned()),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            DataType::Integer => size_of::<u64>(),
+            DataType::Real => size_of::<f64>(),
+            DataType::Text => size_of::<u64>() + size_of::<u64>(),
         }
     }
 }
@@ -65,13 +80,156 @@ impl Display for Value {
     }
 }
 
+#[binrw]
+#[brw(little)]
+#[derive(Debug, Clone)]
+pub(crate) struct DataHeader {
+    next_data_block: BlockIndex,
+    #[br(map = |v: u8| v != 0u8)]
+    #[bw(map = |v: &bool| if *v {1u8} else {0u8})]
+    is_full: bool,
+}
+
+#[binrw]
+#[brw(little)]
+#[derive(Debug, Clone)]
+pub(crate) enum ValueRepr {
+    #[brw(magic = 0u8)]
+    Null(#[brw(pad_size_to = 8)] ()),
+    #[brw(magic = 1u8)]
+    Integer(i64),
+    #[brw(magic = 2u8)]
+    Real(f64),
+    #[brw(magic = 3u8)]
+    Text(u64),
+}
+
+impl ValueRepr {
+    pub(crate) fn is_null(&self) -> bool {
+        matches!(self, ValueRepr::Null(()))
+    }
+
+    pub(crate) fn is_integer(&self) -> bool {
+        matches!(self, ValueRepr::Integer(_))
+    }
+
+    pub(crate) fn is_real(&self) -> bool {
+        matches!(self, ValueRepr::Real(_))
+    }
+
+    pub(crate) fn is_text(&self) -> bool {
+        matches!(self, ValueRepr::Text(_))
+    }
+}
+
+#[binrw]
+#[brw(little)]
+#[bw(assert(*len == 0 || len.abs() as usize == values.len()))]
+#[derive(Debug, Clone)]
+pub(crate) struct RowRepr {
+    len: i8,
+    #[br(count = len.abs())]
+    values: Vec<ValueRepr>,
+}
+
 impl Aidb {
     pub(crate) async fn insert_into(
         &mut self,
         table: String,
-        columns: Vec<SqlCol>,
+        columns: Vec<String>,
         values: Vec<Vec<Value>>,
     ) -> Result<Response> {
-        todo!()
+        let mut schema = self.get_schema(&table).await?;
+        let rows = values.len();
+        let (mut index, mut block) = if schema.data_block == 0 {
+            let (index, block) = self.new_block().await;
+            schema.data_block = index;
+            self.mark_schema_dirty(table.clone());
+            (index, block)
+        } else {
+            (schema.data_block, self.get_block(schema.data_block).await?)
+        };
+        let columns: Vec<_> = columns
+            .into_iter()
+            .map(|name| {
+                schema
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .find(|(_i, column)| column.name == name)
+                    .map(|(i, column)| (i, column.datatype))
+                    .ok_or_eyre("column not found")
+            })
+            .collect();
+        let mut values = values.into_iter();
+        let row_size = 1 + schema.columns.len() * 9;
+        'find_available_block: loop {
+            let mut cursor = block.cursor();
+            let mut header = DataHeader::read(&mut cursor)?;
+            if !header.is_full {
+                while (BLOCK_SIZE - cursor.position() as usize) > row_size {
+                    let position = cursor.position();
+                    let row = RowRepr::read(&mut cursor)?;
+                    if row.len > 0 {
+                        continue;
+                    }
+                    cursor.set_position(position);
+                    match values.next() {
+                        Some(row) => RowRepr {
+                            len: row.len() as i8,
+                            values: todo!(),
+                        }
+                        .write(&mut cursor)?,
+                        None => break 'find_available_block,
+                    }
+                }
+            }
+            header.is_full = true;
+            let (next_index, next_block) = if header.next_data_block == 0 {
+                let (next_index, next_block) = self.new_block().await;
+                header.next_data_block = next_index;
+                (next_index, next_block)
+            } else {
+                (
+                    header.next_data_block,
+                    self.get_block(header.next_data_block).await?,
+                )
+            };
+            cursor.set_position(0);
+            header.write(&mut cursor)?;
+            self.put_block(index, block);
+            self.mark_block_dirty(index);
+            (index, block) = (next_index, next_block);
+        }
+        self.put_schema(table, schema);
+        Ok(Response::Meta {
+            affected_rows: rows,
+        })
+    }
+
+    pub(crate) fn read_row<T: AsRef<[u8]>>(
+        cursor: &mut Cursor<T>,
+    ) -> Result<Option<Vec<ValueRepr>>> {
+        let row = RowRepr::read(cursor)?;
+        if row.len <= 0 {
+            Ok(None)
+        } else {
+            Ok(Some(row.values))
+        }
+    }
+
+    pub(crate) fn write_row<T: AsRef<[u8]>>(
+        cursor: &mut Cursor<T>,
+        row: Vec<ValueRepr>,
+    ) -> Result<()>
+    where
+        Cursor<T>: Write,
+    {
+        RowRepr {
+            len: row.len() as i8,
+            values: row,
+        }
+        .write(cursor)?;
+        Ok(())
     }
 }
