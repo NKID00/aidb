@@ -65,7 +65,37 @@ impl Aidb {
     }
 
     pub async fn describe(self: &mut Aidb, table: String) -> Result<Response> {
-        todo!()
+        let schema = self
+            .get_schema(&table)
+            .await
+            .ok_or_eyre("table not found")?;
+        let r = Response::Rows {
+            columns: vec![
+                Column {
+                    name: "column_name".to_owned(),
+                    datatype: DataType::Text,
+                },
+                Column {
+                    name: "column_datatype".to_owned(),
+                    datatype: DataType::Text,
+                },
+            ],
+            rows: RowStream(Box::new(
+                schema
+                    .columns
+                    .iter()
+                    .map(|column| {
+                        vec![
+                            Value::Text(column.name.clone()),
+                            Value::Text(column.datatype.to_string()),
+                        ]
+                    })
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            )),
+        };
+        self.put_schema(table, schema);
+        Ok(r)
     }
 
     async fn new_schema_block(
