@@ -1,4 +1,3 @@
-mod cache;
 mod data;
 mod query;
 mod schema;
@@ -7,39 +6,36 @@ mod storage;
 mod superblock;
 
 use std::{
-    collections::HashMap,
-    io::{Cursor, Read, Write},
+    collections::{HashMap, HashSet},
+    io::{Read, Write},
 };
 
-pub use cache::BlockIoLog;
 pub use data::{DataType, Value};
 pub use query::{Response, Row, RowStream};
 pub use schema::Column;
+pub use storage::BlockIoLog;
 
 use archive::{load, save};
+use schema::Schema;
+use storage::{Block, BlockIndex};
 use superblock::SuperBlock;
 
-use binrw::{BinRead, BinWrite};
 pub use eyre::Result;
-use eyre::eyre;
-use opendal::{ErrorKind, Operator};
+use opendal::Operator;
 
 #[cfg(feature = "memory")]
 use opendal::{layers::LoggingLayer, services::MemoryConfig};
 
-use crate::schema::Schema;
-
-type BlockIndex = u64;
-
-const BLOCK_SIZE: usize = 8 * 1024;
-type Block = [u8; BLOCK_SIZE];
-
 #[derive(Debug)]
 pub struct Aidb {
     pub(crate) op: Operator,
+    pub(crate) log: BlockIoLog,
+    pub(crate) blocks: HashMap<BlockIndex, Block>,
+    pub(crate) blocks_dirty: HashSet<BlockIndex>,
     pub(crate) superblock: SuperBlock,
-    pub(crate) cache_block: HashMap<BlockIndex, Box<Block>>,
-    pub(crate) cache_schema: HashMap<String, Box<Schema>>,
+    pub(crate) superblock_dirty: bool,
+    pub(crate) schemas: HashMap<String, Box<Schema>>,
+    pub(crate) schemas_dirty: HashSet<String>,
 }
 
 impl Aidb {
@@ -50,42 +46,40 @@ impl Aidb {
             .unwrap()
             .layer(LoggingLayer::default())
             .finish();
-        let superblock = SuperBlock::default();
         let mut this = Self {
             op,
-            superblock,
-            cache_block: HashMap::new(),
-            cache_schema: HashMap::new(),
+            log: BlockIoLog::default(),
+            blocks: HashMap::new(),
+            blocks_dirty: HashSet::new(),
+            superblock: SuperBlock::default(),
+            superblock_dirty: true,
+            schemas: HashMap::new(),
+            schemas_dirty: HashSet::new(),
         };
-        this.write_superblock().await.unwrap();
+        this.submit().await.unwrap();
         this
     }
 
     pub async fn from_op(op: Operator) -> Result<Self> {
         let mut this = Self {
             op,
+            log: BlockIoLog::default(),
+            blocks: HashMap::new(),
+            blocks_dirty: HashSet::new(),
             superblock: SuperBlock::default(),
-            cache_block: HashMap::new(),
-            cache_schema: HashMap::new(),
+            superblock_dirty: false,
+            schemas: HashMap::new(),
+            schemas_dirty: HashSet::new(),
         };
-        match this.read(0).await {
-            Ok(block) => {
-                let mut cursor = Cursor::new(block.as_slice());
-                this.superblock = SuperBlock::read(&mut cursor)?;
-            }
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                let mut block = Self::new_memory_block();
-                let mut cursor = Cursor::new(block.as_mut_slice());
-                this.superblock.write(&mut cursor)?;
-                this.write(0, &block).await?;
-            }
-            Err(e) => Err(e)?,
-        }
+        this.load_superblock().await?;
+        this.submit().await?;
         Ok(this)
     }
 
     pub async fn query(&mut self, sql: impl AsRef<str>) -> Result<Response> {
-        self.dispatch(Self::parse(sql)?).await
+        let r = self.dispatch(Self::parse(sql)?).await;
+        self.submit().await?;
+        r
     }
 
     pub async fn query_log_blocks(
@@ -94,6 +88,7 @@ impl Aidb {
     ) -> Result<(Response, BlockIoLog)> {
         self.reset_block_io_log();
         let result = self.dispatch(Self::parse(sql)?).await;
+        self.submit().await?;
         result.map(|r| (r, self.get_block_io_log()))
     }
 

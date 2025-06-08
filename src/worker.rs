@@ -1,8 +1,9 @@
-use aidb_core::{Aidb, BlockIoLog, DataType, Response, Row};
+use aidb_core::{Aidb, BlockIoLog, Response, Row};
 
 use futures::{SinkExt, StreamExt};
 use gloo_worker::Registrable;
 use gloo_worker::reactor::{ReactorScope, reactor};
+use leptos::logging::log;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +29,7 @@ pub enum WorkerResponse {
 
 #[reactor]
 pub async fn Worker(mut scope: ReactorScope<WorkerRequest, WorkerResponse>) {
+    log!("new database");
     let mut aidb = Aidb::new_memory().await;
     while let Some(request) = scope.next().await {
         match request {

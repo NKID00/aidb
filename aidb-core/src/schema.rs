@@ -1,5 +1,3 @@
-use std::io::Cursor;
-
 use binrw::{BinRead, BinWrite, binrw};
 use eyre::{OptionExt, Result, eyre};
 
@@ -7,8 +5,10 @@ use crate::{Aidb, BlockIndex, DataType, Response, RowStream, Value};
 
 #[binrw]
 #[brw(little)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Schema {
+    #[brw(ignore)]
+    block_index: BlockIndex,
     next_schema_block: BlockIndex,
     #[br(temp)]
     #[bw(calc = name.len() as u64)]
@@ -43,15 +43,16 @@ impl Aidb {
         let mut schema_block_index = self.superblock.first_schema_block;
         let mut tables = vec![];
         while schema_block_index > 0 {
-            let block = self
-                .ensure_block(schema_block_index)
+            let mut block = self
+                .get_block(schema_block_index)
                 .await
                 .ok_or_eyre("block not found, database corrupted")?;
-            let mut cursor = Cursor::new(block.as_slice());
-            let schema = Schema::read(&mut cursor)?;
-            tables.push(schema.name);
-            self.update_cached_block(schema_block_index, block);
+            let mut schema = Schema::read(&mut block.cursor())?;
+            schema.block_index = schema_block_index;
+            tables.push(schema.name.clone());
+            self.put_block(schema_block_index, block);
             let next_schema_block_index = schema.next_schema_block;
+            self.put_schema(schema.name.clone(), Box::new(schema));
             schema_block_index = next_schema_block_index;
         }
         Ok(Response::Rows {
@@ -73,20 +74,22 @@ impl Aidb {
         columns: Vec<Column>,
     ) -> Result<BlockIndex> {
         let (index, mut block) = self
-            .new_cached_block()
+            .new_block()
             .await
             .ok_or_eyre("failed to create block")?;
         let schema = Schema {
+            block_index: index,
             next_schema_block: 0,
-            name: table,
+            name: table.clone(),
             columns,
             row_block: 0,
             index_block: 0,
         };
-        let mut cursor = Cursor::new(block.as_mut_slice());
-        schema.write(&mut cursor)?;
-        self.update_cached_block(index, block);
-        self.write_block(index).await?;
+        schema.write(&mut block.cursor())?;
+        self.put_schema(table.clone(), Box::new(schema));
+        self.mark_schema_dirty(table);
+        self.put_block(index, block);
+        self.mark_block_dirty(index);
         Ok(index)
     }
 
@@ -99,32 +102,76 @@ impl Aidb {
         if schema_block_index == 0 {
             let index = self.new_schema_block(table, columns).await?;
             self.superblock.first_schema_block = index;
-            self.write_superblock().await?;
+            self.mark_superblock_dirty();
             return Ok(Response::Meta { affected_rows: 0 });
         }
         loop {
             let mut block = self
-                .ensure_block(schema_block_index)
+                .get_block(schema_block_index)
                 .await
                 .ok_or_eyre("block not found, database corrupted")?;
-            let mut cursor = Cursor::new(block.as_slice());
-            let mut schema = Schema::read(&mut cursor)?;
+            let mut schema = Schema::read(&mut block.cursor())?;
+            schema.block_index = schema_block_index;
             if schema.name == table {
-                self.update_cached_block(schema_block_index, block);
+                self.put_block(schema_block_index, block);
                 return Err(eyre!("Table exists"));
             }
             if schema.next_schema_block == 0 {
                 let index = self.new_schema_block(table, columns).await?;
                 schema.next_schema_block = index;
-                let mut cursor = Cursor::new(block.as_mut_slice());
-                schema.write(&mut cursor)?;
-                self.update_cached_block(schema_block_index, block);
-                self.write_block(schema_block_index).await?;
+                self.mark_schema_dirty(schema.name.clone());
+                self.put_schema(schema.name.clone(), Box::new(schema));
                 return Ok(Response::Meta { affected_rows: 0 });
             }
-            self.update_cached_block(schema_block_index, block);
+            self.put_block(schema_block_index, block);
             let next_schema_block_index = schema.next_schema_block;
             schema_block_index = next_schema_block_index;
         }
+    }
+
+    pub(crate) async fn get_schema(self: &mut Aidb, table: &str) -> Option<Box<Schema>> {
+        if let Some(schema) = self.schemas.remove(table) {
+            return Some(schema);
+        }
+        self.load_schema(table).await.ok()
+    }
+
+    pub(crate) fn put_schema(self: &mut Aidb, table: String, schema: Box<Schema>) {
+        self.schemas.insert(table, schema);
+    }
+
+    pub(crate) fn mark_schema_dirty(self: &mut Aidb, table: String) {
+        self.schemas_dirty.insert(table);
+    }
+
+    pub async fn save_schema(&mut self, schema: &Schema) -> Result<()> {
+        let mut block = self
+            .get_block(schema.block_index)
+            .await
+            .ok_or_eyre("invalid schema.block_index")?;
+        schema.write(&mut block.cursor())?;
+        self.put_block(schema.block_index, block);
+        self.mark_block_dirty(schema.block_index);
+        Ok(())
+    }
+
+    pub async fn load_schema(&mut self, table: &str) -> Result<Box<Schema>> {
+        let mut schema_block_index = self.superblock.first_schema_block;
+        while schema_block_index > 0 {
+            let mut block = self
+                .get_block(schema_block_index)
+                .await
+                .ok_or_eyre("block not found, database corrupted")?;
+            let mut schema = Schema::read(&mut block.cursor())?;
+            schema.block_index = schema_block_index;
+            self.put_block(schema_block_index, block);
+            if schema.name == table {
+                return Ok(Box::new(schema));
+            }
+            let next_schema_block_index = schema.next_schema_block;
+            self.put_schema(schema.name.clone(), Box::new(schema));
+            schema_block_index = next_schema_block_index;
+        }
+        Err(eyre!("table not found"))
     }
 }

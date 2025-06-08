@@ -56,8 +56,9 @@ pub async fn save<W: Write>(op: &Operator, w: W) -> Result<W> {
     Ok(archive.into_inner()?.finish()?)
 }
 
-/// Load archived data into the operator without cleaning other files.
+/// Load archived data into the operator and leave other data intact.
 pub async fn load<R: Read>(op: &Operator, r: R) -> Result<R> {
+    todo!();
     Ok(r)
 }
 

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use eyre::{OptionExt, Result};
-use opendal::{Operator, Scheme};
+use opendal::{Operator, Scheme, layers::LoggingLayer};
 use opensrv_mysql::AsyncMysqlIntermediary;
 use tokio::{net::TcpListener, select, sync::Notify};
 use tracing::{error, info};
@@ -38,10 +38,9 @@ fn init_storage(opendal_scheme: impl AsRef<str>, opendal_config: Vec<String>) ->
         .map(|s| s.split_once('=').map(|(k, v)| (k.to_owned(), v.to_owned())))
         .collect();
     let map = map.ok_or_eyre("config should be kv pairs")?;
-    Ok(Operator::via_iter(
-        opendal_scheme.as_ref().parse::<Scheme>()?,
-        map,
-    )?)
+    let op = Operator::via_iter(opendal_scheme.as_ref().parse::<Scheme>()?, map)?
+        .layer(LoggingLayer::default());
+    Ok(op)
 }
 
 async fn init_core(args: &Args) -> Result<Aidb> {

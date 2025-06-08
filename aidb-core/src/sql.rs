@@ -6,7 +6,7 @@ use nom::{
     character::complete::{alpha1, alphanumeric1, multispace0, multispace1, none_of, one_of},
     combinator::{eof, fail, map, map_opt, map_res, opt, recognize, value},
     error::ParseError,
-    multi::{fold_many0, many0, many0_count, many1, separated_list0, separated_list1},
+    multi::{fold_many0, many0, many0_count, many1, separated_list1},
     number::complete::hex_u32,
     sequence::{delimited, preceded, separated_pair, terminated},
 };
@@ -184,7 +184,7 @@ fn col(input: &str) -> ParseResult<SqlCol> {
         map(separated_pair(ident, tag("."), ident), |(table, column)| {
             SqlCol::Full { table, column }
         }),
-        map(ident, |column| SqlCol::Short(column)),
+        map(ident, SqlCol::Short),
     ))
     .parse(input)
 }
@@ -472,8 +472,8 @@ fn limit(input: &str) -> ParseResult<u64> {
 
 fn select_target(input: &str) -> ParseResult<SqlSelectTarget> {
     alt((
-        map(col, |column| SqlSelectTarget::Column(column)),
-        map(const_, |v| SqlSelectTarget::Const(v)),
+        map(col, SqlSelectTarget::Column),
+        map(const_, SqlSelectTarget::Const),
         value(SqlSelectTarget::Wildcard, tag("*")),
         map(recognize((alt((tag("@@"), tag("@"))), ident)), |variable| {
             SqlSelectTarget::Variable(variable.to_owned())

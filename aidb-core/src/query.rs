@@ -1,5 +1,4 @@
 use eyre::Result;
-use eyre::eyre;
 
 use crate::{Aidb, data::Value, schema::Column, sql::SqlStmt};
 

@@ -3,12 +3,13 @@ mod worker;
 use std::{
     collections::BTreeMap,
     hash::{DefaultHasher, Hash, Hasher},
+    rc::Rc,
 };
 
 use crate::worker::{Worker, WorkerRequest, WorkerResponse};
 
 use aidb_core::BlockIoLog;
-use futures::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, lock::Mutex};
 use gloo_worker::Spawnable;
 use leptos::{html, logging::log, prelude::*, task::spawn_local};
 use wasm_bindgen::prelude::*;
@@ -22,23 +23,26 @@ enum BlockStatus {
 
 #[derive(Debug, Clone)]
 struct BlockList {
-    files: BTreeMap<usize, BlockStatus>,
+    blocks: BTreeMap<u64, BlockStatus>,
 }
 
 impl BlockList {
     fn new() -> Self {
         Self {
-            files: (0..1000).map(|i| (i, BlockStatus::Normal)).collect(),
+            blocks: (0..200).map(|i| (i, BlockStatus::Normal)).collect(),
         }
     }
 
     fn update(&mut self, log: BlockIoLog) {
         use BlockStatus::*;
+        for (_, status) in self.blocks.iter_mut() {
+            *status = Normal;
+        }
         for b in log.read {
-            self.files.insert(b, Read);
+            self.blocks.insert(b, Read);
         }
         for b in log.written {
-            self.files.insert(b, Written);
+            self.blocks.insert(b, Written);
         }
     }
 }
@@ -101,7 +105,7 @@ impl ChatHistory {
 
 #[component]
 pub fn App() -> impl IntoView {
-    let worker = Worker::spawner().spawn("./worker.js");
+    let worker = Rc::new(Mutex::new(Worker::spawner().spawn("./worker.js")));
 
     let (blocks, set_blocks) = signal(BlockList::new());
     let (chat, set_chat) = signal(ChatHistory::new());
@@ -110,7 +114,7 @@ pub fn App() -> impl IntoView {
     let input_ref = NodeRef::<html::Code>::new();
 
     Effect::new({
-        let worker = worker.fork();
+        let worker = worker.clone();
         move |_| {
             let input = input();
             if input.is_empty() {
@@ -119,8 +123,9 @@ pub fn App() -> impl IntoView {
             }
             log!("complete: {:?}", input);
             spawn_local({
-                let mut worker = worker.fork();
+                let worker = worker.clone();
                 async move {
+                    let mut worker = worker.lock().await;
                     worker.send(WorkerRequest::Completion(input)).await.unwrap();
                     let Some(WorkerResponse::Completion(hint)) = worker.next().await else {
                         panic!("unexpected response from worker");
@@ -152,41 +157,49 @@ pub fn App() -> impl IntoView {
         log!("submit: {:?}", input);
         set_chat.update(|chats| chats.submit(input.clone()));
         spawn_local({
-            let mut worker = worker.fork();
+            let worker = worker.clone();
             async move {
+                let mut worker = worker.lock().await;
                 worker.send(WorkerRequest::Query(input)).await.unwrap();
                 let Some(response) = worker.next().await else {
                     panic!("worker exited unexpectedly");
                 };
                 match response {
                     WorkerResponse::QueryOkRows { columns, rows, log } => {
-                        set_chat.update(|chat| {
-                            chat.respond(
-                                format!(
-                                    "| {} |\n",
-                                    columns.into_iter().collect::<Vec<_>>().join(" | ")
-                                ) + &rows
-                                    .into_iter()
-                                    .map(|row| {
-                                        format!(
-                                            "| {} |",
-                                            row.into_iter()
-                                                .map(|value| value.to_string())
-                                                .collect::<Vec<_>>()
-                                                .join(" | ")
-                                        )
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n"),
-                            )
-                        });
+                        let len = rows.len();
+                        if len == 0 {
+                            set_chat.update(|chat| chat.respond("Empty set"));
+                        } else {
+                            set_chat.update(|chat| {
+                                chat.respond(
+                                    format!(
+                                        "| {} |\n",
+                                        columns.into_iter().collect::<Vec<_>>().join(" | ")
+                                    ) + &rows
+                                        .into_iter()
+                                        .map(|row| {
+                                            format!(
+                                                "| {} |\n",
+                                                row.into_iter()
+                                                    .map(|value| value.to_string())
+                                                    .collect::<Vec<_>>()
+                                                    .join(" | ")
+                                            )
+                                        })
+                                        .collect::<String>()
+                                        + &format!("{len} rows in set"),
+                                )
+                            });
+                        }
                         set_blocks.update(|bl| bl.update(log));
                     }
                     WorkerResponse::QueryOkMeta { affected_rows, log } => set_chat.update(|chat| {
                         chat.respond(format!("Query OK, {affected_rows} rows affected"));
                         set_blocks.update(|bl| bl.update(log));
                     }),
-                    WorkerResponse::QueryErr(e) => set_chat.update(|chat| chat.respond(e)),
+                    WorkerResponse::QueryErr(e) => {
+                        set_chat.update(|chat| chat.respond(format!("ERROR: {e}")))
+                    }
                     _ => panic!("unexpected response from worker"),
                 }
             }
@@ -198,7 +211,7 @@ pub fn App() -> impl IntoView {
             <div class="w-[25%] h-[100vh] sticky top-0 flex flex-col justify-start items-center">
                 <h2 class="m-4 text-lg"> "Blocks" </h2>
                 <div class="z-0 grid grid-cols-8 gap-2 justify-start justify-items-center content-start place-content-center overflow-hidden">
-                    <For each=move || { blocks().files.clone() } key=|f| {
+                    <For each=move || { blocks().blocks.clone() } key=|f| {
                         let mut hasher = DefaultHasher::new();
                         f.hash(&mut hasher);
                         hasher.finish()
@@ -206,7 +219,7 @@ pub fn App() -> impl IntoView {
                         <div class={ "w-10 h-10 flex justify-center items-center rounded ".to_owned() + match status {
                             BlockStatus::Normal => "bg-slate-50",
                             BlockStatus::Read => "bg-sky-100",
-                            BlockStatus::Written => "bg-red-100",
+                            BlockStatus::Written => "bg-orange-100",
                         } }> <code> { name } </code> </div>
                     } } } />
                 </div>
