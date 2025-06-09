@@ -6,7 +6,6 @@ use std::{
 use binrw::{BinRead, BinWrite, binrw};
 use eyre::{OptionExt, Result, eyre};
 use serde::{Deserialize, Serialize};
-use tracing::trace;
 
 use crate::{
     Aidb, Response,
@@ -155,18 +154,27 @@ impl Aidb {
         } else {
             (schema.data_block, self.get_block(schema.data_block).await?)
         };
-        let columns: Vec<(usize, DataType)> = columns
-            .into_iter()
-            .map(|name| {
-                schema
-                    .columns
-                    .iter()
-                    .enumerate()
-                    .find(|(_i, column)| column.name == name)
-                    .map(|(i, column)| (i, column.datatype))
-                    .ok_or_eyre("column not found")
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let columns: Vec<(usize, DataType)> = if columns.is_empty() {
+            schema
+                .columns
+                .iter()
+                .enumerate()
+                .map(|(i, column)| (i, column.datatype))
+                .collect()
+        } else {
+            columns
+                .into_iter()
+                .map(|name| {
+                    schema
+                        .columns
+                        .iter()
+                        .enumerate()
+                        .find(|(_i, column)| column.name == name)
+                        .map(|(i, column)| (i, column.datatype))
+                        .ok_or_eyre("column not found")
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
         let mut rows = values.into_iter();
         let schema_row_size = schema.row_size() as isize;
         'find_block: loop {

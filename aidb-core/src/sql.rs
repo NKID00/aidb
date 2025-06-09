@@ -369,15 +369,13 @@ fn insert_into(input: &str) -> ParseResult<SqlStmt> {
             (kw_preceded("INSERT"), kw_preceded("INTO")),
             (
                 ident,
-                preceded(
-                    multispace0,
-                    (paren(comma_list1(ident)), preceded(kw("VALUES"), values)),
-                ),
+                opt(preceded(multispace0, paren(comma_list1(ident)))),
+                preceded(kw("VALUES"), values),
             ),
         ),
-        |(table, (columns, values))| SqlStmt::InsertInto {
+        |(table, columns, values)| SqlStmt::InsertInto {
             table,
-            columns,
+            columns: columns.unwrap_or_default(),
             values,
         },
     )
