@@ -317,7 +317,7 @@ fn real(input: &str) -> ParseResult<f64> {
 
 fn text(input: &str) -> ParseResult<String> {
     delimited(
-        tag("\""),
+        tag("'"),
         fold_many0(
             alt((
                 preceded(
@@ -328,7 +328,7 @@ fn text(input: &str) -> ParseResult<String> {
                             'r' => '\r',
                             't' => '\t',
                             '\\' => '\\',
-                            '\"' => '\"',
+                            '\'' => '\'',
                             _ => unreachable!(),
                         }),
                         map_opt(delimited(tag("{"), hex_u32, tag("}")), |unicode| {
@@ -336,7 +336,7 @@ fn text(input: &str) -> ParseResult<String> {
                         }),
                     )),
                 ),
-                none_of("\\\""),
+                none_of("\\'"),
             )),
             String::new,
             |mut s, c| {
@@ -344,7 +344,7 @@ fn text(input: &str) -> ParseResult<String> {
                 s
             },
         ),
-        tag("\""),
+        tag("'"),
     )
     .parse(input)
 }

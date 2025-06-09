@@ -41,7 +41,7 @@ impl Aidb {
                 join_on,
                 where_,
                 limit,
-            } => Ok(Response::Meta { affected_rows: 42 }),
+            } => self.select(columns, table, join_on, where_, limit).await,
             SqlStmt::Update { table, set, where_ } => todo!(),
             SqlStmt::DeleteFrom { table, where_ } => todo!(),
         }

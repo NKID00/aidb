@@ -8,8 +8,9 @@ use tracing::{error, warn};
 use crate::Aidb;
 
 pub type BlockIndex = u64;
+pub type BlockOffset = u16;
 
-pub const BLOCK_SIZE: usize = 8 * 1024;
+pub const BLOCK_SIZE: usize = 4 * 1024;
 
 #[derive(Debug)]
 pub struct Block(Box<[u8; BLOCK_SIZE]>);
@@ -33,7 +34,7 @@ pub struct BlockIoLog {
 }
 
 impl Aidb {
-    pub(crate) async fn new_block(self: &mut Aidb) -> (BlockIndex, Block) {
+    pub(crate) fn new_block(self: &mut Aidb) -> (BlockIndex, Block) {
         let index = self.superblock.next_empty_block;
         self.superblock.next_empty_block += 1;
         self.mark_superblock_dirty();

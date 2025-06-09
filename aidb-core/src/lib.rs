@@ -1,6 +1,7 @@
 mod data;
 mod query;
 mod schema;
+mod select;
 mod sql;
 mod storage;
 mod superblock;

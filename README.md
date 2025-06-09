@@ -6,13 +6,13 @@ Try it out at [nk0.me/g/aidb](https://nk0.me/g/aidb), or run it locally with `ca
 
 ## Features
 
-- [ ] Schema storage
-- [ ] Int, Real and Text datatypes
-- [ ] CREATE TABLE statement
-- [ ] Storage engine
+- [x] Schema storage
+- [x] Integer, Real and Text datatypes
+- [x] CREATE TABLE statement
+- [x] Storage engine
 - [ ] Logical query plan and physical query plan
 - [ ] Query engine
-- [ ] INSERT INTO statement
+- [x] INSERT INTO statement
 - [ ] SELECT statement
 - [ ] UPDATE statement
 - [ ] DELETE FROM statement
@@ -23,8 +23,8 @@ Try it out at [nk0.me/g/aidb](https://nk0.me/g/aidb), or run it locally with `ca
 - [ ] Transaction
 - [ ] Write Ahead Journal
 - [ ] START TRANSACTION and COMMIT statement
-- [ ] Fancy browser-only Web-UI (via OPFS)
-- [ ] Mostly MySQL-compatible server
+- [x] Fancy browser-only Web-UI
+- [x] Mostly MySQL-compatible server
 - [x] Absolutely 0% AI (except for the name)
 
 ## Info for nerds

@@ -2,15 +2,17 @@ use binrw::{BinRead, binrw};
 use eyre::Result;
 use opendal::ErrorKind;
 
-use crate::{Aidb, BlockIndex};
+use crate::{Aidb, BlockIndex, storage::BlockOffset};
 
 #[binrw]
 #[derive(Debug, Clone)]
 #[brw(little, magic = b"aidb")]
 pub struct SuperBlock {
-    pub next_empty_block: BlockIndex,
-    pub first_schema_block: BlockIndex,
-    pub first_journal_block: BlockIndex,
+    pub(crate) next_empty_block: BlockIndex,
+    pub(crate) first_schema_block: BlockIndex,
+    pub(crate) first_journal_block: BlockIndex,
+    pub(crate) next_text_block: BlockIndex,
+    pub(crate) next_text_offset: BlockOffset,
 }
 
 impl Default for SuperBlock {
@@ -19,6 +21,8 @@ impl Default for SuperBlock {
             next_empty_block: 1,
             first_schema_block: 0,
             first_journal_block: 0,
+            next_text_block: 0,
+            next_text_offset: 0,
         }
     }
 }

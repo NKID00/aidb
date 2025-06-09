@@ -21,10 +21,22 @@ pub struct Schema {
     columns_len: u64,
     #[br(count = columns_len)]
     pub(crate) columns: Vec<Column>,
-    #[brw(calc = 1)]
-    pub(crate) row_length: u64,
     pub(crate) data_block: BlockIndex,
     pub(crate) index_block: BlockIndex,
+}
+
+impl Schema {
+    pub(crate) fn row_size(&self) -> usize {
+        1 + self
+            .columns
+            .iter()
+            .map(|column| match column.datatype {
+                DataType::Integer => 9,
+                DataType::Real => 9,
+                DataType::Text => 19,
+            })
+            .sum::<usize>()
+    }
 }
 
 #[binrw]
@@ -99,7 +111,7 @@ impl Aidb {
         table: String,
         columns: Vec<Column>,
     ) -> Result<BlockIndex> {
-        let (index, mut block) = self.new_block().await;
+        let (index, mut block) = self.new_block();
         let schema = Schema {
             block_index: index,
             next_schema_block: 0,
