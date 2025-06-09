@@ -134,7 +134,7 @@ impl Aidb {
             Err(e) => match e {
                 nom::Err::Error(e) => {
                     trace!(?e);
-                    Err(eyre!("SQL invalid"))
+                    Err(eyre!("invalid SQL"))
                 }
                 _ => unreachable!(),
             },

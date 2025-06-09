@@ -70,17 +70,6 @@ impl<W: AsyncWrite + Send + Unpin> AsyncMysqlShim<W> for MySQLShim {
         results: QueryResultWriter<'a, W>,
     ) -> Result<(), Self::Error> {
         trace!(query);
-        // if query == "select @@version_comment limit 1" {
-        //     let columns = [Column {
-        //         table: "".to_owned(),
-        //         column: "@@version_comment".to_owned(),
-        //         coltype: ColumnType::MYSQL_TYPE_VAR_STRING,
-        //         colflags: ColumnFlags::empty(),
-        //     }];
-        //     let mut w = results.start(&columns).await?;
-        //     w.write_row(&["aidb"]).await?;
-        //     return w.finish().await;
-        // }
         let mut lock = self.core.lock().await;
         match lock.query(query).await {
             Ok(Response::Rows { columns, rows }) => {

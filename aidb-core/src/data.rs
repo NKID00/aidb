@@ -59,7 +59,7 @@ pub enum Value {
 }
 
 impl Value {
-    pub fn data_type(&self) -> Option<DataType> {
+    pub fn datatype(&self) -> Option<DataType> {
         match self {
             Value::Null => None,
             Value::Integer(_) => Some(DataType::Integer),
