@@ -143,7 +143,6 @@ pub fn App() -> impl IntoView {
         if let Some(text) = input_element.child_nodes().item(0) {
             let offset = input_element.text_content().unwrap().chars().count() as u32;
             if offset > 0 {
-                log!("len = {}", offset);
                 selection
                     .set_position_with_offset(Some(&text), offset)
                     .unwrap();
@@ -151,6 +150,50 @@ pub fn App() -> impl IntoView {
             }
         }
         selection.set_position(Some(&input_element)).unwrap();
+    };
+
+    let update_input = move |text: String| {
+        let new_input = text.replace('\u{a0}', " ").trim().to_owned();
+        if input.get_untracked() != new_input {
+            set_input(new_input);
+        }
+    };
+
+    let paste_input = move |input: String| {
+        let input_element = input_ref.get_untracked().unwrap();
+        let selection = window().get_selection().unwrap().unwrap();
+        if !selection
+            .contains_node_with_allow_partial_containment(&input_element, true)
+            .unwrap()
+        {
+            return;
+        }
+        let Some(text_node) = input_element.child_nodes().item(0) else {
+            return;
+        };
+        let mut text = input_element.text_content().unwrap();
+        let Ok(range) = selection.get_range_at(0) else {
+            return;
+        };
+        let start_offset = range.start_offset().unwrap() as usize;
+        if range.collapsed() {
+            if let Some((offset, _)) = text.char_indices().nth(start_offset) {
+                text.insert_str(offset, &input);
+            } else {
+                text.push_str(&input);
+            };
+        } else {
+            let end_offset = range.end_offset().unwrap() as usize;
+            text.replace_range(start_offset..end_offset, &input);
+        }
+        text_node.set_text_content(Some(&text));
+        selection
+            .set_position_with_offset(
+                Some(&text_node),
+                (start_offset + input.chars().count()) as u32,
+            )
+            .unwrap();
+        update_input(text);
     };
 
     let submit_input = move |input: String| {
@@ -262,10 +305,7 @@ pub fn App() -> impl IntoView {
                                     input_element.set_text_content(Some(&text));
                                     focus_input();
                                 }
-                                let new_input = text.replace('\u{a0}', " ").trim().to_owned();
-                                if input.get_untracked() != new_input {
-                                    set_input(new_input);
-                                }
+                                update_input(text);
                             } on:keydown=move |ev| {
                                 if ev.key() == "Enter" {
                                     ev.prevent_default();
@@ -278,6 +318,13 @@ pub fn App() -> impl IntoView {
                                     set_input("".to_owned());
                                     submit_input(input);
                                 }
+                            } on:paste=move |ev| {
+                                ev.stop_propagation();
+                                ev.prevent_default();
+                                let Some(clipboard) = ev.clipboard_data().and_then(|c| c.get_data("text/plain").ok()) else {
+                                    return;
+                                };
+                                paste_input(clipboard);
                             }>
                                 "\u{feff}"  // ZERO WIDTH NO-BREAK SPACE to make caret visible
                             </code>
