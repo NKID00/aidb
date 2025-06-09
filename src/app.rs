@@ -241,7 +241,8 @@ pub fn App() -> impl IntoView {
                         set_blocks.update(|bl| bl.update(log));
                     }),
                     WorkerResponse::QueryErr(e) => {
-                        set_chat.update(|chat| chat.respond(format!("ERROR: {e}")))
+                        set_chat.update(|chat| chat.respond(format!("ERROR: {e}")));
+                        set_blocks.update(|bl| bl.update(BlockIoLog::default()));
                     }
                     _ => panic!("unexpected response from worker"),
                 }
