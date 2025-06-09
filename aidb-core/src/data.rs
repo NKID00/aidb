@@ -13,7 +13,7 @@ use crate::{
 };
 
 #[binrw]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[brw(little, repr = u8)]
 pub enum DataType {
     Integer = 1,
@@ -49,7 +49,7 @@ impl Display for DataType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Value {
     Null,
     Integer(i64),

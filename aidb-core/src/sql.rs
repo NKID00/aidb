@@ -1,3 +1,5 @@
+use std::fmt::{Display, Formatter};
+
 use eyre::{Result, eyre};
 use nom::{
     IResult, Parser,
@@ -70,6 +72,20 @@ pub enum SqlSelectTarget {
     Const(Value),
     Wildcard,
     Variable(String),
+}
+
+impl Display for SqlSelectTarget {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SqlSelectTarget::Column(SqlCol::Full { table, column }) => {
+                write!(f, "{table}.{column}")
+            }
+            SqlSelectTarget::Column(SqlCol::Short(column)) => write!(f, "{column}"),
+            SqlSelectTarget::Const(value) => write!(f, "{value}"),
+            SqlSelectTarget::Wildcard => write!(f, "*"),
+            SqlSelectTarget::Variable(v) => write!(f, "{v}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
