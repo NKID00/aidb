@@ -43,7 +43,7 @@ pub async fn Worker(mut scope: ReactorScope<WorkerRequest, WorkerResponse>) {
                         scope
                             .send(WorkerResponse::QueryOkRows {
                                 columns: columns.into_iter().map(|c| c.name).collect(),
-                                rows: rows.collect(),
+                                rows,
                                 log,
                             })
                             .await

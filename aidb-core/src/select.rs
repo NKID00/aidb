@@ -1,8 +1,13 @@
-use std::{collections::HashMap, iter::repeat};
+use std::{
+    collections::HashMap,
+    fmt::{Display, Formatter},
+    iter::repeat,
+};
 
 use crate::{
-    Aidb, Column, DataType, Response, Row, RowStream, Value, query,
+    Aidb, Column, DataType, Response, Row, Value,
     sql::{SqlCol, SqlColOrExpr, SqlOn, SqlRel, SqlSelectTarget, SqlWhere},
+    storage::DataPointer,
 };
 
 use eyre::{OptionExt, Result, eyre};
@@ -34,6 +39,7 @@ struct LogicalQueryPlan {
     tables: Vec<String>,
     columns: Vec<QueryColumn>,
     constraints: Vec<QueryConstraint>,
+    limit: Option<usize>,
 }
 
 type ColumnIndex = usize;
@@ -51,18 +57,137 @@ enum SelectionConstraint {
 }
 
 #[derive(Debug)]
+struct ScanState {
+    next_record: DataPointer,
+}
+
+impl Default for ScanState {
+    fn default() -> Self {
+        Self {
+            next_record: DataPointer {
+                block: 0,
+                offset: 0,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct BTreeState {}
+
+#[derive(Debug)]
+struct CartesianProductState {
+    first_run: bool,
+    previous_row: Vec<Row>,
+}
+
+impl Default for CartesianProductState {
+    fn default() -> Self {
+        Self {
+            first_run: true,
+            previous_row: vec![],
+        }
+    }
+}
+
+#[derive(Debug)]
 enum PhysicalPlan {
+    Scan {
+        table: String,
+        state: ScanState,
+    },
+    BTree {
+        table: String,
+        key: i64,
+        state: BTreeState,
+    },
     Projection {
         columns: Vec<ProjectionColumn>,
         inner: Box<PhysicalPlan>,
     },
     CartesianProduct {
-        tables: Vec<String>,
+        inner: Vec<PhysicalPlan>,
+        state: CartesianProductState,
     },
     Selection {
         constraints: Vec<SelectionConstraint>,
         inner: Box<PhysicalPlan>,
     },
+    Limit {
+        limit: usize,
+        inner: Box<PhysicalPlan>,
+        state: usize,
+    },
+}
+
+impl PhysicalPlan {
+    fn restart(&mut self) {
+        match self {
+            PhysicalPlan::Scan { state, .. } => *state = Default::default(),
+            PhysicalPlan::BTree { state, .. } => *state = Default::default(),
+            PhysicalPlan::Projection { inner, .. } => inner.restart(),
+            PhysicalPlan::CartesianProduct { inner, state } => {
+                for plan in inner {
+                    plan.restart();
+                }
+                *state = Default::default();
+            }
+            PhysicalPlan::Selection { inner, .. } => inner.restart(),
+            PhysicalPlan::Limit { inner, state, .. } => {
+                inner.restart();
+                *state = 0;
+            }
+        }
+    }
+}
+
+impl Display for PhysicalPlan {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PhysicalPlan::Scan { table, .. } => write!(f, "{table}"),
+            PhysicalPlan::BTree { table, key, state } => write!(f, "btree{table}"),
+            PhysicalPlan::Projection { columns, inner } => write!(
+                f,
+                "Π{{{}}} ({inner})",
+                columns
+                    .iter()
+                    .map(|column| match column {
+                        ProjectionColumn::Column(index) => format!("${index}"),
+                        ProjectionColumn::Const(value) => format!("{value}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            PhysicalPlan::CartesianProduct { inner, .. } => {
+                if inner.is_empty() {
+                    write!(f, "∅")
+                } else {
+                    write!(
+                        f,
+                        "{}",
+                        inner
+                            .iter()
+                            .map(|plan| format!("({plan})"))
+                            .collect::<Vec<_>>()
+                            .join(" × ")
+                    )
+                }
+            }
+            PhysicalPlan::Selection { constraints, inner } => write!(
+                f,
+                "σ{{{}}} ({inner})",
+                constraints
+                    .iter()
+                    .map(|constraint| match constraint {
+                        SelectionConstraint::EqColumn(lhs, rhs) => format!("${lhs} = ${rhs}"),
+                        SelectionConstraint::EqConst(index, value) => format!("${index} = {value}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ∧ ")
+            ),
+            PhysicalPlan::Limit { limit, inner, .. } => write!(f, "limit{{{limit}}} ({inner})"),
+        }
+    }
 }
 
 impl Aidb {
@@ -72,23 +197,19 @@ impl Aidb {
         table: Option<String>,
         join_on: Vec<(String, SqlOn)>,
         where_: Option<SqlWhere>,
-        limit: Option<u64>,
+        limit: Option<usize>,
     ) -> Result<Response> {
         let (columns, plan) = self
             .build_logical_plan(columns, table, join_on, where_, limit)
             .await?;
         debug!(logical = ?plan);
-        // let mut plan = self.build_physical_plan(plan).await?;
-        // debug!(physical= ?plan);
-        // let mut response = vec![];
-        // while let Some(mut rows) = self.execute_select(&mut plan).await? {
-        //     response.append(&mut rows);
-        // }
-        // Ok(Response::Rows {
-        //     columns,
-        //     rows: RowStream(Box::new(response.into_iter())),
-        // })
-        Ok(Response::Meta { affected_rows: 42 })
+        let mut plan = self.build_physical_plan(plan).await?;
+        debug!("physical = {plan}");
+        let mut rows = vec![];
+        while let Some(row) = self.execute_select(&mut plan).await? {
+            rows.push(row);
+        }
+        Ok(Response::Rows { columns, rows })
     }
 
     async fn build_logical_plan(
@@ -97,7 +218,7 @@ impl Aidb {
         table: Option<String>,
         join_on: Vec<(String, SqlOn)>,
         where_: Option<SqlWhere>,
-        _limit: Option<u64>, // TODO: limit is not implemented
+        limit: Option<usize>,
     ) -> Result<(Vec<Column>, LogicalQueryPlan)> {
         // if selects const value only
         if columns.iter().all(|column| match column {
@@ -139,6 +260,7 @@ impl Aidb {
                     tables: vec![],
                     columns,
                     constraints: vec![],
+                    limit,
                 },
             ));
         }
@@ -155,14 +277,8 @@ impl Aidb {
             if schemas.contains_key(table) {
                 Err(eyre!("duplicate table"))?;
             }
-            match self.get_schema(table).await {
-                Ok(schema) => {
-                    schemas.insert(table.clone(), schema);
-                }
-                Err(e) => {
-                    return Err(e);
-                }
-            }
+            let schema = self.get_schema(table).await?;
+            schemas.insert(table.clone(), schema);
         }
 
         let reify_column = |column| -> Result<(String, String, DataType)> {
@@ -318,6 +434,7 @@ impl Aidb {
             tables,
             columns: query_columns,
             constraints,
+            limit,
         };
         for (table, schema) in schemas {
             self.put_schema(table, schema);
@@ -327,52 +444,171 @@ impl Aidb {
 
     async fn build_physical_plan(&mut self, plan: LogicalQueryPlan) -> Result<PhysicalPlan> {
         let product = Box::new(PhysicalPlan::CartesianProduct {
-            tables: plan.tables,
+            inner: plan
+                .tables
+                .iter()
+                .map(|table| PhysicalPlan::Scan {
+                    table: table.clone(),
+                    state: Default::default(),
+                })
+                .collect(),
+            state: Default::default(),
         });
-        // Ok(PhysicalPlan::Projection {
-        //     columns: plan.columns,
-        //     inner: product,
-        // })
-        todo!()
+        let mut columns = vec![];
+        for table in plan.tables.into_iter() {
+            let schema = self.get_schema(&table).await?;
+            columns.extend(
+                schema
+                    .columns
+                    .iter()
+                    .map(|column| (table.clone(), column.name.clone())),
+            );
+            self.put_schema(table, schema);
+        }
+        let find_column_index = |table: &str, column: &str| -> ColumnIndex {
+            columns
+                .iter()
+                .enumerate()
+                .find(|(_, (t, c))| t == table && c == column)
+                .unwrap()
+                .0
+        };
+
+        let selection = PhysicalPlan::Selection {
+            constraints: plan
+                .constraints
+                .into_iter()
+                .map(|constraint| match constraint {
+                    QueryConstraint::EqColumn {
+                        table_lhs,
+                        column_lhs,
+                        table_rhs,
+                        column_rhs,
+                    } => SelectionConstraint::EqColumn(
+                        find_column_index(&table_lhs, &column_lhs),
+                        find_column_index(&table_rhs, &column_rhs),
+                    ),
+                    QueryConstraint::EqConst {
+                        table,
+                        column,
+                        value,
+                    } => SelectionConstraint::EqConst(find_column_index(&table, &column), value),
+                })
+                .collect(),
+            inner: product,
+        };
+
+        let projection = PhysicalPlan::Projection {
+            columns: plan
+                .columns
+                .into_iter()
+                .map(|column| match column {
+                    QueryColumn::Column { table, column } => {
+                        ProjectionColumn::Column(find_column_index(&table, &column))
+                    }
+                    QueryColumn::Const(value) => ProjectionColumn::Const(value),
+                })
+                .collect(),
+            inner: Box::new(selection),
+        };
+
+        let plan = match plan.limit {
+            Some(limit) => PhysicalPlan::Limit {
+                limit,
+                inner: Box::new(projection),
+                state: Default::default(),
+            },
+            None => projection,
+        };
+
+        Ok(plan)
     }
 
-    async fn execute_select(&mut self, plan: &mut PhysicalPlan) -> Result<Option<Vec<Row>>> {
+    async fn execute_select(&mut self, plan: &mut PhysicalPlan) -> Result<Option<Row>> {
         match plan {
-            PhysicalPlan::Projection { columns, inner } => {
-                Box::pin(self.execute_select(inner)).await.map(|r| {
-                    r.map(|rows| {
-                        rows.into_iter()
-                            .map(|row| {
-                                columns
-                                    .iter()
-                                    .map(|column| match column {
-                                        ProjectionColumn::Column(index) => row[*index].clone(),
-                                        ProjectionColumn::Const(value) => value.clone(),
-                                    })
-                                    .collect()
-                            })
-                            .collect()
-                    })
-                })
+            PhysicalPlan::Scan { table, state } => {
+                todo!()
             }
-            PhysicalPlan::CartesianProduct { tables } => todo!(),
-            PhysicalPlan::Selection { constraints, inner } => {
-                Box::pin(self.execute_select(inner)).await.map(|r| {
-                    r.map(|rows| {
-                        rows.into_iter()
-                            .filter(|row| {
-                                constraints.iter().all(|constraint| match constraint {
-                                    SelectionConstraint::EqColumn(lhs, rhs) => {
-                                        row[*lhs] == row[*rhs]
-                                    }
-                                    SelectionConstraint::EqConst(index, value) => {
-                                        row[*index] == *value
-                                    }
-                                })
-                            })
-                            .collect()
+            PhysicalPlan::BTree { table, key, state } => todo!(),
+            PhysicalPlan::Projection { columns, inner } => {
+                let Some(row) = Box::pin(self.execute_select(inner)).await? else {
+                    return Ok(None);
+                };
+                let row = columns
+                    .iter()
+                    .map(|column| match column {
+                        ProjectionColumn::Column(index) => row[*index].clone(),
+                        ProjectionColumn::Const(value) => value.clone(),
                     })
-                })
+                    .collect();
+                Ok(Some(row))
+            }
+            PhysicalPlan::CartesianProduct { inner, state } => {
+                if inner.is_empty() {
+                    if state.first_run {
+                        state.first_run = false;
+                        return Ok(Some(vec![]));
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                if state.first_run {
+                    state.first_run = false;
+                    for plan in inner.iter_mut() {
+                        match Box::pin(self.execute_select(plan)).await? {
+                            Some(row) => {
+                                state.previous_row.push(row);
+                            }
+                            None => {
+                                return Ok(None);
+                            }
+                        }
+                    }
+                    Ok(Some(state.previous_row.iter().flatten().cloned().collect()))
+                } else {
+                    let mut index = 0;
+                    loop {
+                        match Box::pin(self.execute_select(&mut inner[index])).await? {
+                            Some(row) => {
+                                state.previous_row[index] = row;
+                                return Ok(Some(
+                                    state.previous_row.iter().flatten().cloned().collect(),
+                                ));
+                            }
+                            None => {
+                                if index >= inner.len() {
+                                    return Ok(None);
+                                } else {
+                                    inner[index].restart();
+                                    index += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            PhysicalPlan::Selection { constraints, inner } => {
+                while let Some(row) = Box::pin(self.execute_select(inner)).await? {
+                    if constraints.iter().all(|constraint| match constraint {
+                        SelectionConstraint::EqColumn(lhs, rhs) => row[*lhs] == row[*rhs],
+                        SelectionConstraint::EqConst(index, value) => row[*index] == *value,
+                    }) {
+                        return Ok(Some(row));
+                    }
+                }
+                Ok(None)
+            }
+            PhysicalPlan::Limit {
+                limit,
+                inner,
+                state,
+            } => {
+                if *state < *limit {
+                    *state += 1;
+                    Box::pin(self.execute_select(inner)).await
+                } else {
+                    Ok(None)
+                }
             }
         }
     }

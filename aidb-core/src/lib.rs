@@ -1,3 +1,4 @@
+mod btree;
 mod data;
 mod query;
 mod schema;
@@ -12,7 +13,7 @@ use std::{
 };
 
 pub use data::{DataType, Value};
-pub use query::{Response, Row, RowStream};
+pub use query::{Response, Row};
 pub use schema::Column;
 pub use storage::BlockIoLog;
 

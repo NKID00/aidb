@@ -1,7 +1,7 @@
 use binrw::{BinRead, BinWrite, binrw};
 use eyre::{Result, eyre};
 
-use crate::{Aidb, BlockIndex, DataType, Response, RowStream, Value};
+use crate::{Aidb, BlockIndex, DataType, Response, Value};
 
 #[binrw]
 #[brw(little)]
@@ -71,7 +71,7 @@ impl Aidb {
                 name: "table_name".to_owned(),
                 datatype: DataType::Text,
             }],
-            rows: RowStream(Box::new(tables.into_iter().map(|s| vec![Value::Text(s)]))),
+            rows: tables.into_iter().map(|s| vec![Value::Text(s)]).collect(),
         })
     }
 
@@ -88,19 +88,16 @@ impl Aidb {
                     datatype: DataType::Text,
                 },
             ],
-            rows: RowStream(Box::new(
-                schema
-                    .columns
-                    .iter()
-                    .map(|column| {
-                        vec![
-                            Value::Text(column.name.clone()),
-                            Value::Text(column.datatype.to_string()),
-                        ]
-                    })
-                    .collect::<Vec<_>>()
-                    .into_iter(),
-            )),
+            rows: schema
+                .columns
+                .iter()
+                .map(|column| {
+                    vec![
+                        Value::Text(column.name.clone()),
+                        Value::Text(column.datatype.to_string()),
+                    ]
+                })
+                .collect(),
         };
         self.put_schema(table, schema);
         Ok(r)

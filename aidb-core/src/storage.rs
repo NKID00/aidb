@@ -1,6 +1,6 @@
 use std::{collections::HashSet, io::Cursor, mem::swap};
 
-use binrw::BinWrite;
+use binrw::{BinWrite, binrw};
 use eyre::Result;
 use serde::{Deserialize, Serialize};
 use tracing::{error, warn};
@@ -25,6 +25,14 @@ impl Block {
         cursor.set_position(offset as u64);
         cursor
     }
+}
+
+#[binrw]
+#[brw(little)]
+#[derive(Debug, Clone)]
+pub struct DataPointer {
+    pub block: BlockIndex,
+    pub offset: BlockOffset,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

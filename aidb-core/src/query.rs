@@ -4,20 +4,10 @@ use crate::{Aidb, data::Value, schema::Column, sql::SqlStmt};
 
 pub type Row = Vec<Value>;
 
-pub struct RowStream(pub(crate) Box<dyn Iterator<Item = Row> + Send>);
-
-impl Iterator for RowStream {
-    type Item = Row;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next()
-    }
-}
-
 pub enum Response {
     Rows {
         columns: Vec<Column>,
-        rows: RowStream,
+        rows: Vec<Row>,
     },
     Meta {
         affected_rows: usize,
@@ -42,8 +32,8 @@ impl Aidb {
                 where_,
                 limit,
             } => self.select(columns, table, join_on, where_, limit).await,
-            SqlStmt::Update { table, set, where_ } => todo!(),
-            SqlStmt::DeleteFrom { table, where_ } => todo!(),
+            SqlStmt::Update { .. } => todo!(),
+            SqlStmt::DeleteFrom { .. } => todo!(),
         }
     }
 }

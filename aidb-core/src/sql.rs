@@ -37,7 +37,7 @@ pub enum SqlStmt {
         table: Option<String>,
         join_on: Vec<(String, SqlOn)>,
         where_: Option<SqlWhere>,
-        limit: Option<u64>,
+        limit: Option<usize>,
     },
     /// UPDATE table SET column = value, ... [WHERE condition]
     Update {
@@ -296,10 +296,6 @@ fn create_table(input: &str) -> ParseResult<SqlStmt> {
     .parse(input)
 }
 
-fn columns(input: &str) -> ParseResult<Vec<SqlCol>> {
-    comma_list1(col).parse(input)
-}
-
 fn integer(input: &str) -> ParseResult<i64> {
     nom::character::complete::i64(input)
 }
@@ -513,7 +509,7 @@ fn select(input: &str) -> ParseResult<SqlStmt> {
             table,
             join_on,
             where_,
-            limit,
+            limit: limit.map(|limit| limit as usize),
         },
     )
     .parse(input)

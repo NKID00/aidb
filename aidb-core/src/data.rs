@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Aidb, Response,
-    storage::{BLOCK_SIZE, BlockIndex, BlockOffset},
+    storage::{BLOCK_SIZE, BlockIndex, BlockOffset, DataPointer},
 };
 
 #[binrw]
@@ -102,29 +102,7 @@ pub(crate) enum ValueRepr {
     #[brw(magic = 0u8)]
     TextNull(#[brw(pad_size_to = 18)] ()),
     #[brw(magic = 3u8)]
-    Text {
-        len: u64,
-        block: BlockIndex,
-        offset: BlockOffset,
-    },
-}
-
-impl ValueRepr {
-    pub(crate) fn is_null(&self) -> bool {
-        matches!(self, ValueRepr::NumNull(()) | ValueRepr::TextNull(()))
-    }
-
-    pub(crate) fn is_integer(&self) -> bool {
-        matches!(self, ValueRepr::Integer(_))
-    }
-
-    pub(crate) fn is_real(&self) -> bool {
-        matches!(self, ValueRepr::Real(_))
-    }
-
-    pub(crate) fn is_text(&self) -> bool {
-        matches!(self, ValueRepr::Text { .. })
-    }
+    Text { len: u64, ptr: DataPointer },
 }
 
 #[binrw]
@@ -210,7 +188,10 @@ impl Aidb {
                                 (DataType::Text, Value::Text(s)) => {
                                     let len = s.len() as u64;
                                     let (block, offset) = self.insert_text(s).await?;
-                                    ValueRepr::Text { len, block, offset }
+                                    ValueRepr::Text {
+                                        len,
+                                        ptr: DataPointer { block, offset },
+                                    }
                                 }
                                 _ => return Err(eyre!("invalid value")),
                             };

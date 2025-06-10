@@ -28,23 +28,39 @@ struct Args {
     /// OpenDAL configuration
     #[arg(short, long, default_values_t = ["root=./data/".to_owned()])]
     config: Vec<String>,
+    /// Enable Block IO Logging
+    #[arg(short = 'l', long, default_value_t = false)]
+    io_log: bool,
     #[command(flatten)]
     verbose: clap_verbosity_flag::Verbosity<clap_verbosity_flag::InfoLevel>,
 }
 
-fn init_storage(opendal_scheme: impl AsRef<str>, opendal_config: Vec<String>) -> Result<Operator> {
+fn init_storage(
+    opendal_scheme: impl AsRef<str>,
+    opendal_config: Vec<String>,
+    io_log: bool,
+) -> Result<Operator> {
     let map: Option<Vec<(String, String)>> = opendal_config
         .into_iter()
         .map(|s| s.split_once('=').map(|(k, v)| (k.to_owned(), v.to_owned())))
         .collect();
     let map = map.ok_or_eyre("config should be kv pairs")?;
-    let op = Operator::via_iter(opendal_scheme.as_ref().parse::<Scheme>()?, map)?
-        .layer(LoggingLayer::default());
+    let op = Operator::via_iter(opendal_scheme.as_ref().parse::<Scheme>()?, map)?;
+    let op = if io_log {
+        op.layer(LoggingLayer::default())
+    } else {
+        op
+    };
     Ok(op)
 }
 
 async fn init_core(args: &Args) -> Result<Aidb> {
-    Ok(Aidb::from_op(init_storage(&args.scheme, args.config.clone())?).await?)
+    Ok(Aidb::from_op(init_storage(
+        &args.scheme,
+        args.config.clone(),
+        args.io_log,
+    )?)
+    .await?)
 }
 
 fn get_shim(core: Arc<Mutex<Aidb>>) -> MySQLShim {
