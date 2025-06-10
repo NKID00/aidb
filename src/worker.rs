@@ -1,10 +1,13 @@
-use aidb_core::{Aidb, BlockIoLog, Response, Row};
+use aidb_core::{Aidb, BlockIoLog, Response};
 
 use futures::{SinkExt, StreamExt};
 use gloo_worker::Registrable;
 use gloo_worker::reactor::{ReactorScope, reactor};
+use js_sys::global;
 use leptos::logging::log;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::JsValue;
+use web_sys::WorkerGlobalScope;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkerRequest {
@@ -15,16 +18,18 @@ pub enum WorkerRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkerResponse {
     Completion(String),
-    QueryOkRows {
-        columns: Vec<String>,
-        rows: Vec<Row>,
-        log: BlockIoLog,
+    Query {
+        response: Result<(Response, BlockIoLog), String>,
+        duration: f64,
     },
-    QueryOkMeta {
-        affected_rows: usize,
-        log: BlockIoLog,
-    },
-    QueryErr(String),
+}
+
+fn worker_global_scope() -> WorkerGlobalScope {
+    Into::<JsValue>::into(global()).into()
+}
+
+fn now() -> f64 {
+    worker_global_scope().performance().unwrap().now()
 }
 
 #[reactor]
@@ -37,28 +42,18 @@ pub async fn Worker(mut scope: ReactorScope<WorkerRequest, WorkerResponse>) {
                 let hint = Aidb::complete(sql);
                 scope.send(WorkerResponse::Completion(hint)).await.unwrap();
             }
-            WorkerRequest::Query(sql) => match aidb.query_log_blocks(sql).await {
-                Ok((response, log)) => match response {
-                    Response::Rows { columns, rows } => {
-                        scope
-                            .send(WorkerResponse::QueryOkRows {
-                                columns: columns.into_iter().map(|c| c.name).collect(),
-                                rows,
-                                log,
-                            })
-                            .await
-                            .unwrap();
-                    }
-                    Response::Meta { affected_rows } => scope
-                        .send(WorkerResponse::QueryOkMeta { affected_rows, log })
-                        .await
-                        .unwrap(),
-                },
-                Err(e) => scope
-                    .send(WorkerResponse::QueryErr(e.to_string()))
+            WorkerRequest::Query(sql) => {
+                let time_start = now();
+                let response = aidb.query_log_blocks(sql).await;
+                let duration = (now() - time_start) / 1000.;
+                scope
+                    .send(WorkerResponse::Query {
+                        response: response.map_err(|e| e.to_string()),
+                        duration,
+                    })
                     .await
-                    .unwrap(),
-            },
+                    .unwrap();
+            }
         }
     }
 }

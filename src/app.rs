@@ -8,11 +8,12 @@ use std::{
 
 use crate::worker::{Worker, WorkerRequest, WorkerResponse};
 
-use aidb_core::BlockIoLog;
+use aidb_core::{BlockIoLog, Response};
 use futures::{SinkExt, StreamExt, lock::Mutex};
 use gloo_worker::Spawnable;
-use leptos::{html, logging::log, prelude::*, task::spawn_local};
+use leptos::{either::either, html, logging::log, prelude::*, task::spawn_local};
 use wasm_bindgen::prelude::*;
+use web_sys::{ScrollBehavior, ScrollToOptions};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum BlockStatus {
@@ -51,7 +52,8 @@ impl BlockList {
 struct Chat {
     id: usize,
     request: String,
-    response: String,
+    response: Option<Result<Response, String>>,
+    duration: f64,
 }
 
 impl Chat {
@@ -59,13 +61,89 @@ impl Chat {
         Self {
             id,
             request,
-            response: "".to_owned(),
+            response: None,
+            duration: 0.,
         }
     }
 
-    fn respond(&mut self, id: usize, response: impl AsRef<str>) {
-        self.response += response.as_ref();
+    fn respond(&mut self, id: usize, response: Result<Response, String>, duration: f64) {
         self.id = id;
+        self.response = Some(response);
+        self.duration = duration
+    }
+
+    fn view(&self) -> impl IntoView + use<> {
+        let response = either! {self.response.clone(),
+            Some(Ok(Response::Meta { affected_rows })) => view! {
+                <div class="p-2 self-start">
+                    { format!("Query OK, {affected_rows} rows affected ({:.3} sec)", self.duration) }
+                </div>
+            },
+            Some(Ok(Response::Rows { columns, rows })) => {
+                either! {rows.is_empty(),
+                    true => view! {
+                        <div class="p-2 self-start">
+                            { format!("Empty set ({:.3} sec)", self.duration) }
+                        </div>
+                    },
+                    false => {
+                        let header: Vec<_> = columns
+                            .into_iter()
+                            .map(|column| view! {
+                                <th class="px-4 py-2 border border-gray-300">
+                                    {column.name}
+                                </th>
+                            })
+                            .collect();
+                        let len = rows.len();
+                        let body: Vec<_> = rows
+                            .into_iter()
+                            .map(|row| {
+                                let values: Vec<_> = row
+                                    .into_iter()
+                                    .map(|value| {
+                                        view! {
+                                            <td class="px-4 py-2 border border-gray-300">
+                                                { value.to_string() }
+                                            </td>
+                                        }
+                                    })
+                                    .collect();
+                                view! { <tr> { values } </tr> }
+                            })
+                            .collect();
+                        view! {
+                            <table class="p-2 self-start border-collapse">
+                                <thead> <tr> { header } </tr> </thead>
+                                <tbody> { body } </tbody>
+                            </table>
+                            <div class="p-2 self-start">
+                                { if len == 1 {
+                                    format!("1 row in set ({:.3} sec)", self.duration)
+                                } else {
+                                    format!("{} rows in set ({:.3} sec)", len, self.duration)
+                                } }
+                            </div>
+                        }
+                    }
+                }
+            },
+            Some(Err(e)) => view! {
+                <div class="p-2 self-start text-red-500">
+                    { format!("ERROR: {e}") }
+                </div>
+            },
+            None => (),
+        };
+        view! {
+            <div class="flex flex-col justify-start font-mono">
+                <hr class="my-8 border-slate-100" />
+                <pre class="px-4 py-2 self-end bg-slate-100 rounded-l-xl rounded-br-xl text-wrap break-all ">
+                    { self.request.clone() }
+                </pre>
+                { response }
+            </div>
+        }
     }
 }
 
@@ -94,12 +172,12 @@ impl ChatHistory {
         self.chats.push(Chat::new(id, request));
     }
 
-    pub fn respond(&mut self, response: impl AsRef<str>) {
+    pub fn respond(&mut self, response: Result<Response, String>, duration: f64) {
         let id = self.next_id();
         let Some(chat) = self.chats.last_mut() else {
             panic!("unexpected response");
         };
-        chat.respond(id, response);
+        chat.respond(id, response, duration);
     }
 }
 
@@ -153,7 +231,11 @@ pub fn App() -> impl IntoView {
     };
 
     let update_input = move |text: String| {
-        let new_input = text.replace('\u{a0}', " ").trim().to_owned();
+        let new_input = text
+            .replace('\u{a0}', " ")
+            .replace('\u{feff}', "")
+            .trim()
+            .to_owned();
         if input.get_untracked() != new_input {
             set_input(new_input);
         }
@@ -162,16 +244,11 @@ pub fn App() -> impl IntoView {
     let paste_input = move |input: String| {
         let input_element = input_ref.get_untracked().unwrap();
         let selection = window().get_selection().unwrap().unwrap();
-        if !selection
-            .contains_node_with_allow_partial_containment(&input_element, true)
-            .unwrap()
-        {
-            return;
-        }
-        let Some(text_node) = input_element.child_nodes().item(0) else {
-            return;
-        };
-        let mut text = input_element.text_content().unwrap();
+        let text_node = input_element
+            .child_nodes()
+            .item(0)
+            .unwrap_or_else(|| input_element.clone().into());
+        let mut text = text_node.text_content().unwrap();
         let Ok(range) = selection.get_range_at(0) else {
             return;
         };
@@ -182,6 +259,8 @@ pub fn App() -> impl IntoView {
             } else {
                 text.push_str(&input);
             };
+        } else if range.start_container().unwrap() != range.end_container().unwrap() {
+            text.replace_range(start_offset.., &input);
         } else {
             let end_offset = range.end_offset().unwrap() as usize;
             text.replace_range(start_offset..end_offset, &input);
@@ -189,7 +268,7 @@ pub fn App() -> impl IntoView {
         text_node.set_text_content(Some(&text));
         selection
             .set_position_with_offset(
-                Some(&text_node),
+                Some(&input_element.child_nodes().item(0).unwrap()),
                 (start_offset + input.chars().count()) as u32,
             )
             .unwrap();
@@ -208,44 +287,34 @@ pub fn App() -> impl IntoView {
                     panic!("worker exited unexpectedly");
                 };
                 match response {
-                    WorkerResponse::QueryOkRows { columns, rows, log } => {
-                        let len = rows.len();
-                        if len == 0 {
-                            set_chat.update(|chat| chat.respond("Empty set"));
-                        } else {
-                            set_chat.update(|chat| {
-                                chat.respond(
-                                    format!(
-                                        "| {} |\n",
-                                        columns.into_iter().collect::<Vec<_>>().join(" | ")
-                                    ) + &rows
-                                        .into_iter()
-                                        .map(|row| {
-                                            format!(
-                                                "| {} |\n",
-                                                row.into_iter()
-                                                    .map(|value| value.to_string())
-                                                    .collect::<Vec<_>>()
-                                                    .join(" | ")
-                                            )
-                                        })
-                                        .collect::<String>()
-                                        + &format!("{len} rows in set"),
-                                )
-                            });
-                        }
+                    WorkerResponse::Query {
+                        response: Ok((response, log)),
+                        duration,
+                    } => {
+                        set_chat.update(|chat| chat.respond(Ok(response), duration));
                         set_blocks.update(|bl| bl.update(log));
                     }
-                    WorkerResponse::QueryOkMeta { affected_rows, log } => set_chat.update(|chat| {
-                        chat.respond(format!("Query OK, {affected_rows} rows affected"));
-                        set_blocks.update(|bl| bl.update(log));
-                    }),
-                    WorkerResponse::QueryErr(e) => {
-                        set_chat.update(|chat| chat.respond(format!("ERROR: {e}")));
-                        set_blocks.update(|bl| bl.update(BlockIoLog::default()));
+                    WorkerResponse::Query {
+                        response: Err(e),
+                        duration,
+                    } => {
+                        set_chat.update(|chat| chat.respond(Err(e), duration));
                     }
                     _ => panic!("unexpected response from worker"),
                 }
+                let f = Closure::wrap(Box::new(move || {
+                    let options = ScrollToOptions::new();
+                    options.set_top(document().body().unwrap().scroll_height() as f64);
+                    options.set_behavior(ScrollBehavior::Smooth);
+                    window().scroll_to_with_scroll_to_options(&options);
+                }) as Box<dyn FnMut()>);
+                window()
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(
+                        f.as_ref().unchecked_ref(),
+                        0,
+                    )
+                    .unwrap();
+                f.forget();
             }
         });
     };
@@ -272,23 +341,13 @@ pub fn App() -> impl IntoView {
                     <button class="flex-1 px-4 py-2 bg-gray-200 hover:bg-gray-300 active:bg-gray-400 rounded"> "Load" </button>
                 </div>
             </div>
-            <div class="min-h-[100vh] flex-1 flex flex-col justify-start items-stretch">
+            <div class="min-h-[100vh] flex-1 flex flex-col justify-start items-stretch scroll-smooth">
                 <div class="px-8 py-4 sticky top-0 z-30 bg-white flex flex-col justify-start items-start">
                     <h2 class="font-bold text-2xl"> "AIDB" </h2>
                     <h3> { env!("CARGO_PKG_VERSION") } </h3>
                 </div>
                 <div class="p-8 flex-1 z-0 flex flex-col gap-4 justify-start items-stretch [&>div:first-child>hr]:hidden">
-                    <For each=move || { chat().chats.clone() } key=|c| { c.id } children={ |c| { view! {
-                        <div class="flex flex-col justify-start">
-                            <hr class="my-8 border-slate-100" />
-                            <pre class="px-4 py-2 self-end bg-slate-100 rounded-l-xl rounded-br-xl text-wrap break-all ">
-                                { c.request.clone() }
-                            </pre>
-                            <pre class="p-2 self-start text-wrap break-all ">
-                                { c.response.clone() }
-                            </pre>
-                        </div>
-                    } } } />
+                    <For each=move || { chat().chats.clone() } key=|c| { c.id } children=|c| { c.view() } />
                 </div>
                 <div class="min-h-40 sticky bottom-0">
                     <div class="min-h-20 mt-12 mb-8 px-8 w-full flex flex-row items-stretch">

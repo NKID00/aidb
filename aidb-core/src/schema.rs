@@ -1,5 +1,6 @@
 use binrw::{BinRead, BinWrite, binrw};
 use eyre::{Result, eyre};
+use serde::{Deserialize, Serialize};
 
 use crate::{Aidb, BlockIndex, DataType, Response, Value};
 
@@ -41,7 +42,7 @@ impl Schema {
 
 #[binrw]
 #[brw(little)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Column {
     #[br(temp)]
     #[bw(calc = name.len() as u64)]

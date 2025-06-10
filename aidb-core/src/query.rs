@@ -1,9 +1,11 @@
 use eyre::Result;
+use serde::{Deserialize, Serialize};
 
 use crate::{Aidb, data::Value, schema::Column, sql::SqlStmt};
 
 pub type Row = Vec<Value>;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
     Rows {
         columns: Vec<Column>,
