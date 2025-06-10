@@ -11,6 +11,7 @@ use crate::worker::{Worker, WorkerRequest, WorkerResponse};
 use aidb_core::{BlockIoLog, Response};
 use futures::{SinkExt, StreamExt, lock::Mutex};
 use gloo_worker::Spawnable;
+use itertools::Itertools;
 use leptos::{either::either, html, logging::log, prelude::*, task::spawn_local};
 use wasm_bindgen::prelude::*;
 use web_sys::{ScrollBehavior, ScrollToOptions};
@@ -87,19 +88,19 @@ impl Chat {
                         </div>
                     },
                     false => {
-                        let header: Vec<_> = columns
+                        let header = columns
                             .into_iter()
                             .map(|column| view! {
                                 <th class="px-4 py-2 border border-gray-300">
                                     {column.name}
                                 </th>
                             })
-                            .collect();
+                            .collect_vec();
                         let len = rows.len();
-                        let body: Vec<_> = rows
+                        let body = rows
                             .into_iter()
                             .map(|row| {
-                                let values: Vec<_> = row
+                                let values = row
                                     .into_iter()
                                     .map(|value| {
                                         view! {
@@ -108,10 +109,10 @@ impl Chat {
                                             </td>
                                         }
                                     })
-                                    .collect();
+                                    .collect_vec();
                                 view! { <tr> { values } </tr> }
                             })
-                            .collect();
+                            .collect_vec();
                         view! {
                             <table class="p-2 self-start border-collapse">
                                 <thead> <tr> { header } </tr> </thead>

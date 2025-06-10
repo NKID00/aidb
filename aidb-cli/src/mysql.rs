@@ -3,6 +3,7 @@ use std::{io, sync::Arc};
 use aidb_core::{Aidb, DataType, Response, Row, Value};
 use async_trait::async_trait;
 use futures::lock::Mutex;
+use itertools::Itertools;
 use opensrv_mysql::{
     AsyncMysqlShim, Column, ColumnFlags, ColumnType, ErrorKind, InitWriter, OkResponse,
     QueryResultWriter, StatementMetaWriter, ToMysqlValue,
@@ -73,7 +74,7 @@ impl<W: AsyncWrite + Send + Unpin> AsyncMysqlShim<W> for MySQLShim {
         let mut lock = self.core.lock().await;
         match lock.query(query).await {
             Ok(Response::Rows { columns, rows }) => {
-                let columns: Vec<_> = columns.into_iter().map(aidb_column_to_mysql).collect();
+                let columns = columns.into_iter().map(aidb_column_to_mysql).collect_vec();
                 let mut r = results.start(&columns).await?;
                 for row in rows {
                     r.write_row(aidb_row_to_mysql(row)).await?;

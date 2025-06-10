@@ -2,15 +2,19 @@ use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
     iter::repeat,
+    mem::swap,
 };
 
 use crate::{
     Aidb, Column, DataType, Response, Row, Value,
+    data::DataHeader,
     sql::{SqlCol, SqlColOrExpr, SqlOn, SqlRel, SqlSelectTarget, SqlWhere},
-    storage::DataPointer,
+    storage::{BLOCK_SIZE, Block, BlockIndex, BlockOffset},
 };
 
+use binrw::BinRead;
 use eyre::{OptionExt, Result, eyre};
+use itertools::Itertools;
 use tracing::debug;
 
 #[derive(Debug)]
@@ -57,18 +61,19 @@ enum SelectionConstraint {
 }
 
 #[derive(Debug)]
-struct ScanState {
-    next_record: DataPointer,
+enum ScanState {
+    Initalized,
+    Running {
+        block_index: BlockIndex,
+        next_block_index: BlockIndex,
+        block: Block,
+        offset: BlockOffset,
+    },
 }
 
 impl Default for ScanState {
     fn default() -> Self {
-        Self {
-            next_record: DataPointer {
-                block: 0,
-                offset: 0,
-            },
-        }
+        Self::Initalized
     }
 }
 
@@ -93,11 +98,12 @@ impl Default for CartesianProductState {
 #[derive(Debug)]
 enum PhysicalPlan {
     Scan {
-        table: String,
+        row_size: usize,
+        first_block: BlockIndex,
         state: ScanState,
     },
     BTree {
-        table: String,
+        root: BlockIndex,
         key: i64,
         state: BTreeState,
     },
@@ -144,8 +150,8 @@ impl PhysicalPlan {
 impl Display for PhysicalPlan {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            PhysicalPlan::Scan { table, .. } => write!(f, "{table}"),
-            PhysicalPlan::BTree { table, key, state } => write!(f, "btree{table}"),
+            PhysicalPlan::Scan { first_block, .. } => write!(f, "@{first_block}"),
+            PhysicalPlan::BTree { root, key, .. } => write!(f, "btree@{root} = {key}"),
             PhysicalPlan::Projection { columns, inner } => write!(
                 f,
                 "Π{{{}}} ({inner})",
@@ -155,7 +161,7 @@ impl Display for PhysicalPlan {
                         ProjectionColumn::Column(index) => format!("${index}"),
                         ProjectionColumn::Const(value) => format!("{value}"),
                     })
-                    .collect::<Vec<_>>()
+                    .collect_vec()
                     .join(", ")
             ),
             PhysicalPlan::CartesianProduct { inner, .. } => {
@@ -168,7 +174,7 @@ impl Display for PhysicalPlan {
                         inner
                             .iter()
                             .map(|plan| format!("({plan})"))
-                            .collect::<Vec<_>>()
+                            .collect_vec()
                             .join(" × ")
                     )
                 }
@@ -182,7 +188,7 @@ impl Display for PhysicalPlan {
                         SelectionConstraint::EqColumn(lhs, rhs) => format!("${lhs} = ${rhs}"),
                         SelectionConstraint::EqConst(index, value) => format!("${index} = {value}"),
                     })
-                    .collect::<Vec<_>>()
+                    .collect_vec()
                     .join(" ∧ ")
             ),
             PhysicalPlan::Limit { limit, inner, .. } => write!(f, "limit{{{limit}}} ({inner})"),
@@ -207,6 +213,7 @@ impl Aidb {
         debug!("physical = {plan}");
         let mut rows = vec![];
         while let Some(row) = self.execute_select(&mut plan).await? {
+            debug!(?row);
             rows.push(row);
         }
         Ok(Response::Rows { columns, rows })
@@ -295,12 +302,12 @@ impl Aidb {
                     Ok((table, column, *datatype))
                 }
                 SqlCol::Short(column) => {
-                    let matched_columns: Vec<_> = schemas
+                    let matched_columns = schemas
                         .iter()
                         .flat_map(|(table, schema)| repeat(table).zip(schema.columns.iter()))
                         .filter(|(_, c)| column == c.name)
                         .map(|(t, c)| (t.clone(), c.clone()))
-                        .collect();
+                        .collect_vec();
                     if matched_columns.is_empty() {
                         Err(eyre!("column not found"))?
                     } else if matched_columns.len() > 1 {
@@ -443,27 +450,20 @@ impl Aidb {
     }
 
     async fn build_physical_plan(&mut self, plan: LogicalQueryPlan) -> Result<PhysicalPlan> {
-        let product = Box::new(PhysicalPlan::CartesianProduct {
-            inner: plan
-                .tables
-                .iter()
-                .map(|table| PhysicalPlan::Scan {
-                    table: table.clone(),
-                    state: Default::default(),
-                })
-                .collect(),
-            state: Default::default(),
-        });
         let mut columns = vec![];
-        for table in plan.tables.into_iter() {
-            let schema = self.get_schema(&table).await?;
+        let mut row_sizes = HashMap::new();
+        let mut first_blocks = HashMap::new();
+        for table in plan.tables.iter() {
+            let schema = self.get_schema(table).await?;
+            row_sizes.insert(table.clone(), schema.row_size());
+            first_blocks.insert(table.clone(), schema.data_block);
             columns.extend(
                 schema
                     .columns
                     .iter()
                     .map(|column| (table.clone(), column.name.clone())),
             );
-            self.put_schema(table, schema);
+            self.put_schema(table.clone(), schema);
         }
         let find_column_index = |table: &str, column: &str| -> ColumnIndex {
             columns
@@ -473,6 +473,19 @@ impl Aidb {
                 .unwrap()
                 .0
         };
+
+        let product = Box::new(PhysicalPlan::CartesianProduct {
+            inner: plan
+                .tables
+                .iter()
+                .map(|table| PhysicalPlan::Scan {
+                    row_size: *row_sizes.get(table).unwrap(),
+                    first_block: *first_blocks.get(table).unwrap(),
+                    state: Default::default(),
+                })
+                .collect(),
+            state: Default::default(),
+        });
 
         let selection = PhysicalPlan::Selection {
             constraints: plan
@@ -525,11 +538,80 @@ impl Aidb {
     }
 
     async fn execute_select(&mut self, plan: &mut PhysicalPlan) -> Result<Option<Row>> {
+        debug!(plan = plan.to_string());
         match plan {
-            PhysicalPlan::Scan { table, state } => {
-                todo!()
-            }
-            PhysicalPlan::BTree { table, key, state } => todo!(),
+            PhysicalPlan::Scan {
+                row_size,
+                first_block,
+                state,
+            } => match state {
+                ScanState::Initalized => {
+                    if *first_block == 0 {
+                        Ok(None)
+                    } else {
+                        let mut block = self.get_block(*first_block).await?;
+                        let mut cursor = block.cursor();
+                        let header = DataHeader::read(&mut cursor)?;
+                        let offset = cursor.position() as BlockOffset;
+                        *state = ScanState::Running {
+                            block_index: *first_block,
+                            next_block_index: header.next_data_block,
+                            block,
+                            offset,
+                        };
+                        Box::pin(self.execute_select(plan)).await
+                    }
+                }
+                ScanState::Running {
+                    next_block_index,
+                    block,
+                    offset,
+                    ..
+                } => {
+                    let mut cursor = block.cursor_at(*offset);
+                    while (BLOCK_SIZE as isize - cursor.position() as isize) > *row_size as isize {
+                        let position = cursor.position();
+                        if let Some(row) = self.read_row(&mut cursor).await? {
+                            *offset = cursor.position() as u16;
+                            return Ok(Some(row));
+                        };
+                        cursor.set_position(position + *row_size as u64);
+                    }
+                    if *next_block_index == 0 {
+                        let mut new_state = ScanState::Initalized;
+                        swap(state, &mut new_state);
+                        let ScanState::Running {
+                            block_index, block, ..
+                        } = new_state
+                        else {
+                            unreachable!()
+                        };
+                        self.put_block(block_index, block);
+                        Ok(None)
+                    } else {
+                        let mut block = self.get_block(*next_block_index).await?;
+                        let mut cursor = block.cursor();
+                        let header = DataHeader::read(&mut cursor)?;
+                        let offset = cursor.position() as BlockOffset;
+                        let mut new_state = ScanState::Running {
+                            block_index: *first_block,
+                            next_block_index: header.next_data_block,
+                            block,
+                            offset,
+                        };
+                        swap(state, &mut new_state);
+                        let ScanState::Running {
+                            block_index, block, ..
+                        } = new_state
+                        else {
+                            unreachable!()
+                        };
+                        self.put_block(block_index, block);
+                        Box::pin(self.execute_select(plan)).await
+                    }
+                }
+            },
+            PhysicalPlan::BTree { .. } => todo!(),
             PhysicalPlan::Projection { columns, inner } => {
                 let Some(row) = Box::pin(self.execute_select(inner)).await? else {
                     return Ok(None);
@@ -576,11 +658,10 @@ impl Aidb {
                                 ));
                             }
                             None => {
+                                inner[index].restart();
+                                index += 1;
                                 if index >= inner.len() {
                                     return Ok(None);
-                                } else {
-                                    inner[index].restart();
-                                    index += 1;
                                 }
                             }
                         }
@@ -603,7 +684,7 @@ impl Aidb {
                 inner,
                 state,
             } => {
-                if *state < *limit {
+                if state < limit {
                     *state += 1;
                     Box::pin(self.execute_select(inner)).await
                 } else {

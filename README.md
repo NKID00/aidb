@@ -10,10 +10,10 @@ Try it out at [nk0.me/g/aidb](https://nk0.me/g/aidb), or run it locally with `ca
 - [x] Integer, Real and Text datatypes
 - [x] CREATE TABLE statement
 - [x] Storage engine
-- [ ] Logical query plan and physical query plan
-- [ ] Query engine
+- [x] Logical query plan and physical query plan
+- [x] Query engine
 - [x] INSERT INTO statement
-- [ ] SELECT statement
+- [x] SELECT statement
 - [ ] UPDATE statement
 - [ ] DELETE FROM statement
 - [ ] B-Tree index

@@ -20,7 +20,7 @@ impl Block {
         Cursor::new(self.0.as_mut_slice())
     }
 
-    pub(crate) fn cursor_at(&mut self, offset: usize) -> Cursor<&mut [u8]> {
+    pub(crate) fn cursor_at(&mut self, offset: BlockOffset) -> Cursor<&mut [u8]> {
         let mut cursor = self.cursor();
         cursor.set_position(offset as u64);
         cursor

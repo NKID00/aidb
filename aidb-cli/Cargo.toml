@@ -19,3 +19,4 @@ tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "full"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["local-time"] }
 archive = { workspace = true }
+itertools = { workspace = true }

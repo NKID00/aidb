@@ -12,6 +12,7 @@ nom-language = "0.1"
 opendal = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
+itertools = { workspace = true }
 
 [features]
 default = ["memory"]

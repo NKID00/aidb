@@ -1,14 +1,16 @@
 use std::{
     fmt::{Display, Formatter},
-    io::{Cursor, Write},
+    io::{Cursor, Read, Write},
 };
 
 use binrw::{BinRead, BinWrite, binrw};
 use eyre::{OptionExt, Result, eyre};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use crate::{
-    Aidb, Response,
+    Aidb, Column, Response,
     storage::{BLOCK_SIZE, BlockIndex, BlockOffset, DataPointer},
 };
 
@@ -83,26 +85,28 @@ impl Display for Value {
 #[brw(little)]
 #[derive(Debug, Clone)]
 pub(crate) struct DataHeader {
-    next_data_block: BlockIndex,
+    pub(crate) next_data_block: BlockIndex,
     #[br(map = |v: u8| v != 0u8)]
     #[bw(map = |v: &bool| if *v {1u8} else {0u8})]
-    is_full: bool,
+    pub(crate) is_full: bool,
 }
 
 #[binrw]
 #[brw(little)]
 #[derive(Debug, Clone)]
 pub(crate) enum ValueRepr {
-    #[brw(magic = 0u8)]
-    NumNull(#[brw(pad_size_to = 8)] ()),
     #[brw(magic = 1u8)]
     Integer(i64),
     #[brw(magic = 2u8)]
-    Real(f64),
-    #[brw(magic = 0u8)]
-    TextNull(#[brw(pad_size_to = 18)] ()),
+    IntegerNull(#[brw(pad_size_to = 8)] ()),
     #[brw(magic = 3u8)]
-    Text { len: u64, ptr: DataPointer },
+    Real(f64),
+    #[brw(magic = 4u8)]
+    RealNull(#[brw(pad_size_to = 8)] ()),
+    #[brw(magic = 5u8)]
+    Text { len: u16, ptr: DataPointer },
+    #[brw(magic = 6u8)]
+    TextNull(#[brw(pad_size_to = 12)] ()),
 }
 
 #[binrw]
@@ -132,15 +136,10 @@ impl Aidb {
         } else {
             (schema.data_block, self.get_block(schema.data_block).await?)
         };
-        let columns: Vec<(usize, DataType)> = if columns.is_empty() {
-            schema
-                .columns
-                .iter()
-                .enumerate()
-                .map(|(i, column)| (i, column.datatype))
-                .collect()
+        let column_indices: Vec<usize> = if columns.is_empty() {
+            (0..schema.columns.len()).collect()
         } else {
-            columns
+            let column_indices = columns
                 .into_iter()
                 .map(|name| {
                     schema
@@ -148,12 +147,17 @@ impl Aidb {
                         .iter()
                         .enumerate()
                         .find(|(_i, column)| column.name == name)
-                        .map(|(i, column)| (i, column.datatype))
+                        .map(|(i, _)| i)
                         .ok_or_eyre("column not found")
                 })
-                .collect::<Result<Vec<_>>>()?
+                .collect::<Result<Vec<_>>>()?;
+            if !column_indices.iter().all_unique() {
+                return Err(eyre!("column specified multiple times"));
+            }
+            column_indices
         };
         let mut rows = values.into_iter();
+        let schema_columns_count = schema.columns.len();
         let schema_row_size = schema.row_size() as isize;
         'find_block: loop {
             let mut cursor = block.cursor();
@@ -162,42 +166,30 @@ impl Aidb {
             if !header.is_full {
                 while (BLOCK_SIZE as isize - cursor.position() as isize) > schema_row_size {
                     let position = cursor.position();
-                    let row = RowRepr::read(&mut cursor)?;
-                    if row.len > 0 {
+                    if Aidb::is_row_valid(&mut cursor)? {
+                        cursor.set_position(position + schema_row_size as u64);
                         continue;
-                    }
+                    };
                     cursor.set_position(position);
                     let Some(row) = rows.next() else {
                         self.mark_block_dirty(index);
                         self.put_block(index, block);
                         break 'find_block;
                     };
-                    let mut row_repr: Vec<_> = schema
-                        .columns
-                        .iter()
-                        .map(|column| match column.datatype {
-                            DataType::Integer | DataType::Real => ValueRepr::NumNull(()),
-                            DataType::Text => ValueRepr::TextNull(()),
-                        })
-                        .collect();
-                    for ((i, datatype), value) in columns.iter().zip(row.into_iter()) {
-                        if !matches!(value, Value::Null) {
-                            row_repr[*i] = match (datatype, value) {
-                                (DataType::Integer, Value::Integer(v)) => ValueRepr::Integer(v),
-                                (DataType::Real, Value::Real(v)) => ValueRepr::Real(v),
-                                (DataType::Text, Value::Text(s)) => {
-                                    let len = s.len() as u64;
-                                    let (block, offset) = self.insert_text(s).await?;
-                                    ValueRepr::Text {
-                                        len,
-                                        ptr: DataPointer { block, offset },
-                                    }
-                                }
-                                _ => return Err(eyre!("invalid value")),
-                            };
+                    let mut full_row = vec![Value::Null; schema_columns_count];
+                    for item in column_indices.iter().zip_longest(row) {
+                        match item {
+                            itertools::EitherOrBoth::Both(i, value) => full_row[*i] = value,
+                            itertools::EitherOrBoth::Left(_) => {
+                                return Err(eyre!("missing values"));
+                            }
+                            itertools::EitherOrBoth::Right(_) => {
+                                return Err(eyre!("too much values"));
+                            }
                         }
                     }
-                    Aidb::write_row(&mut cursor, row_repr)?;
+                    self.write_row(&mut cursor, &schema.columns, full_row)
+                        .await?;
                 }
                 dirty = true;
                 header.is_full = true;
@@ -225,9 +217,27 @@ impl Aidb {
         Ok(Response::Meta { affected_rows })
     }
 
-    async fn insert_text(self: &mut Aidb, s: String) -> Result<(BlockIndex, BlockOffset)> {
+    async fn read_text(self: &mut Aidb, len: u16, ptr: DataPointer) -> Result<String> {
+        if len == 0 {
+            return Ok("".to_owned());
+        }
+        if len as usize > BLOCK_SIZE {
+            return Err(eyre!("text too long"));
+        }
+        let mut block = self.get_block(ptr.block).await?;
+        let mut cursor = block.cursor_at(ptr.offset);
+        let mut buf = vec![0u8; len as usize];
+        cursor.read_exact(&mut buf)?;
+        self.put_block(ptr.block, block);
+        Ok(String::from_utf8(buf)?)
+    }
+
+    async fn write_text(self: &mut Aidb, s: String) -> Result<DataPointer> {
         if s.is_empty() {
-            return Ok((0, 0));
+            return Ok(DataPointer {
+                block: 0,
+                offset: 0,
+            });
         }
         if s.len() > BLOCK_SIZE {
             return Err(eyre!("text too long"));
@@ -243,38 +253,78 @@ impl Aidb {
                 self.superblock.next_text_offset,
             )
         };
-        let mut cursor = block.cursor_at(offset as usize);
+        let mut cursor = block.cursor_at(offset);
         cursor.write_all(s.as_bytes())?;
-        let offset = cursor.position() as u16;
+        let next_offset = cursor.position() as BlockOffset;
         self.put_block(index, block);
         self.mark_block_dirty(index);
         self.superblock.next_text_block = index;
-        self.superblock.next_text_offset = offset;
+        self.superblock.next_text_offset = next_offset;
         self.mark_superblock_dirty();
-        Ok((index, offset))
+        Ok(DataPointer {
+            block: index,
+            offset,
+        })
     }
 
-    pub(crate) fn read_row<T: AsRef<[u8]>>(
+    pub(crate) fn is_row_valid<T: AsRef<[u8]>>(cursor: &mut Cursor<T>) -> Result<bool> {
+        Ok(i8::read_le(cursor)? > 0)
+    }
+
+    /// Read a row. Position of cursor may not be at row border if `Ok(None)` is returned
+    pub(crate) async fn read_row<T: AsRef<[u8]>>(
+        &mut self,
         cursor: &mut Cursor<T>,
-    ) -> Result<Option<Vec<ValueRepr>>> {
-        let row = RowRepr::read(cursor)?;
-        if row.len <= 0 {
-            Ok(None)
-        } else {
-            Ok(Some(row.values))
+    ) -> Result<Option<Vec<Value>>> {
+        let position = cursor.position();
+        if !Aidb::is_row_valid(cursor)? {
+            return Ok(None);
         }
+        cursor.set_position(position);
+        debug!(position = cursor.position(), "read_row");
+        let row = RowRepr::read(cursor)?;
+        let mut values = vec![];
+        for value in row.values {
+            values.push(match value {
+                ValueRepr::IntegerNull(()) | ValueRepr::RealNull(()) | ValueRepr::TextNull(()) => {
+                    Value::Null
+                }
+                ValueRepr::Integer(v) => Value::Integer(v),
+                ValueRepr::Real(v) => Value::Real(v),
+                ValueRepr::Text { len, ptr } => Value::Text(self.read_text(len, ptr).await?),
+            });
+        }
+        Ok(Some(values))
     }
 
-    pub(crate) fn write_row<T: AsRef<[u8]>>(
+    pub(crate) async fn write_row<T: AsRef<[u8]>>(
+        &mut self,
         cursor: &mut Cursor<T>,
-        row: Vec<ValueRepr>,
+        columns: &[Column],
+        row: Vec<Value>,
     ) -> Result<()>
     where
         Cursor<T>: Write,
     {
+        debug!(position = cursor.position(), "write_row");
+        let mut values = vec![];
+        for (Column { datatype, .. }, value) in columns.iter().zip(row.into_iter()) {
+            values.push(match (datatype, value) {
+                (DataType::Integer, Value::Null) => ValueRepr::IntegerNull(()),
+                (DataType::Real, Value::Null) => ValueRepr::RealNull(()),
+                (DataType::Text, Value::Null) => ValueRepr::TextNull(()),
+                (DataType::Integer, Value::Integer(v)) => ValueRepr::Integer(v),
+                (DataType::Real, Value::Real(v)) => ValueRepr::Real(v),
+                (DataType::Text, Value::Text(s)) => ValueRepr::Text {
+                    len: s.len() as u16,
+                    ptr: self.write_text(s).await?,
+                },
+                _ => return Err(eyre!("invalid value")),
+            });
+        }
         RowRepr {
-            len: row.len() as i8,
-            values: row,
+            len: values.len() as i8,
+            values,
         }
         .write(cursor)?;
         Ok(())
