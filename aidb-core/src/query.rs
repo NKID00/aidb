@@ -36,6 +36,12 @@ impl Aidb {
             } => self.select(columns, table, join_on, where_, limit).await,
             SqlStmt::Update { .. } => todo!(),
             SqlStmt::DeleteFrom { .. } => todo!(),
+            SqlStmt::FlushTables => {
+                self.submit().await?;
+                self.schemas.clear();
+                self.blocks.clear();
+                Ok(Response::Meta { affected_rows: 0 })
+            }
         }
     }
 }

@@ -127,20 +127,34 @@ enum PhysicalPlan {
 }
 
 impl PhysicalPlan {
-    fn restart(&mut self) {
+    fn reset(&mut self, db: &mut Aidb) {
         match self {
-            PhysicalPlan::Scan { state, .. } => *state = Default::default(),
-            PhysicalPlan::BTree { state, .. } => *state = Default::default(),
-            PhysicalPlan::Projection { inner, .. } => inner.restart(),
+            PhysicalPlan::Scan { state, .. } => {
+                let mut new_state = Default::default();
+                swap(state, &mut new_state);
+                let state = new_state;
+                if let ScanState::Running {
+                    block_index, block, ..
+                } = state
+                {
+                    db.put_block(block_index, block);
+                }
+            }
+            PhysicalPlan::BTree { state, .. } => {
+                let mut new_state = Default::default();
+                swap(state, &mut new_state);
+                // TODO: finalize previous state
+            }
+            PhysicalPlan::Projection { inner, .. } => inner.reset(db),
             PhysicalPlan::CartesianProduct { inner, state } => {
                 for plan in inner {
-                    plan.restart();
+                    plan.reset(db);
                 }
                 *state = Default::default();
             }
-            PhysicalPlan::Selection { inner, .. } => inner.restart(),
+            PhysicalPlan::Selection { inner, .. } => inner.reset(db),
             PhysicalPlan::Limit { inner, state, .. } => {
-                inner.restart();
+                inner.reset(db);
                 *state = 0;
             }
         }
@@ -216,6 +230,7 @@ impl Aidb {
             debug!(?row);
             rows.push(row);
         }
+        plan.reset(self);
         Ok(Response::Rows { columns, rows })
     }
 
@@ -546,6 +561,7 @@ impl Aidb {
                 state,
             } => match state {
                 ScanState::Initalized => {
+                    debug!(first_block);
                     if *first_block == 0 {
                         Ok(None)
                     } else {
@@ -568,6 +584,7 @@ impl Aidb {
                     offset,
                     ..
                 } => {
+                    debug!(next_block_index);
                     let mut cursor = block.cursor_at(*offset);
                     while (BLOCK_SIZE as isize - cursor.position() as isize) > *row_size as isize {
                         let position = cursor.position();
@@ -594,7 +611,7 @@ impl Aidb {
                         let header = DataHeader::read(&mut cursor)?;
                         let offset = cursor.position() as BlockOffset;
                         let mut new_state = ScanState::Running {
-                            block_index: *first_block,
+                            block_index: *next_block_index,
                             next_block_index: header.next_data_block,
                             block,
                             offset,
@@ -658,7 +675,7 @@ impl Aidb {
                                 ));
                             }
                             None => {
-                                inner[index].restart();
+                                inner[index].reset(self);
                                 index += 1;
                                 if index >= inner.len() {
                                     return Ok(None);

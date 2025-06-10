@@ -50,6 +50,8 @@ pub enum SqlStmt {
         table: String,
         where_: Option<SqlWhere>,
     },
+    /// FLUSH TABLES
+    FlushTables,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +133,7 @@ impl Aidb {
             ("INTO a(a) VALUES (1)", "INTO"),
             ("VALUES (1)", "VALUES"),
             ("TABLE a (a INTEGER)", "TABLE"),
+            ("TABLES", "TABLES"),
             (")", ")"),
             (";", ";"),
         ] {
@@ -208,7 +211,14 @@ fn col(input: &str) -> ParseResult<SqlCol> {
 fn stmt(input: &str) -> ParseResult<SqlStmt> {
     delimited(
         multispace0,
-        alt((show_tables, describe, create_table, insert_into, select)),
+        alt((
+            show_tables,
+            describe,
+            create_table,
+            insert_into,
+            select,
+            flush_tables,
+        )),
         (multispace0, opt(tag(";")), multispace0, eof),
     )
     .parse(input)
@@ -511,6 +521,14 @@ fn select(input: &str) -> ParseResult<SqlStmt> {
             where_,
             limit: limit.map(|limit| limit as usize),
         },
+    )
+    .parse(input)
+}
+
+fn flush_tables(input: &str) -> ParseResult<SqlStmt> {
+    value(
+        SqlStmt::FlushTables,
+        (kw_preceded("FLUSH"), tag_no_case("TABLES")),
     )
     .parse(input)
 }
