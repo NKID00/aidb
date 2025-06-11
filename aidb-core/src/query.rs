@@ -48,7 +48,6 @@ impl Aidb {
                 if self.transaction_in_progress {
                     return Ok(Response::Meta { affected_rows: 0 });
                 }
-                self.superblock_backup = Some(self.superblock.clone());
                 self.transaction_in_progress = true;
                 Ok(Response::Meta { affected_rows: 0 })
             }
@@ -56,7 +55,6 @@ impl Aidb {
                 if !self.transaction_in_progress {
                     return Ok(Response::Meta { affected_rows: 0 });
                 }
-                self.superblock_backup = None;
                 self.transaction_in_progress = false;
                 Ok(Response::Meta { affected_rows: 0 })
             }
@@ -70,7 +68,6 @@ impl Aidb {
                 self.blocks_dirty.clear();
                 self.superblock = self.superblock_backup.take().unwrap();
                 self.superblock_dirty = false;
-                self.superblock_backup = None;
                 self.transaction_in_progress = false;
                 Ok(Response::Meta { affected_rows: 0 })
             }

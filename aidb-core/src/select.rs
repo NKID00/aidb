@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     Aidb, Column, DataType, Response, Row, Value,
-    btree::BTreeState,
+    btree::{BTreeExactState, BTreeRangeState},
     data::DataHeader,
     schema::{IndexInfo, IndexType},
     sql::{SqlCol, SqlColOrExpr, SqlOn, SqlRel, SqlSelectTarget, SqlWhere},
@@ -105,11 +105,12 @@ enum PhysicalPlan {
     BTreeExact {
         root: BlockIndex,
         key: i64,
+        state: BTreeExactState,
     },
     BTreeRange {
         root: BlockIndex,
         range: (Bound<i64>, Bound<i64>),
-        state: BTreeState,
+        state: BTreeRangeState,
     },
     Projection {
         columns: Vec<ProjectionColumn>,
@@ -144,10 +145,8 @@ impl PhysicalPlan {
                     db.put_block(block_index, block);
                 }
             }
-            PhysicalPlan::BTreeExact { .. } => {}
-            PhysicalPlan::BTreeRange { state, .. } => {
-                *state = BTreeState::Initialized;
-            }
+            PhysicalPlan::BTreeExact { state, .. } => *state = BTreeExactState::Initialized,
+            PhysicalPlan::BTreeRange { state, .. } => *state = BTreeRangeState::Initialized,
             PhysicalPlan::Projection { inner, .. } => inner.reset(db),
             PhysicalPlan::CartesianProduct { inner, state } => {
                 for plan in inner {
@@ -527,7 +526,11 @@ impl Aidb {
                                 }
                                 _ => return Err(eyre!("datatype mismatch")),
                             };
-                            plans.push(PhysicalPlan::BTreeExact { root: block, key });
+                            plans.push(PhysicalPlan::BTreeExact {
+                                root: block,
+                                key,
+                                state: Default::default(),
+                            });
                             indexed = true;
                             continue;
                         }
@@ -686,8 +689,8 @@ impl Aidb {
                     }
                 }
             },
-            PhysicalPlan::BTreeExact { root, key } => {
-                let Some(ptr) = self.select_btree(*root, *key).await? else {
+            PhysicalPlan::BTreeExact { root, key, state } => {
+                let Some(ptr) = self.select_btree(*root, *key, state).await? else {
                     return Ok(None);
                 };
                 let mut block = self.get_block(ptr.block).await?;

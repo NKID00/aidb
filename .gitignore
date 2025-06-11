@@ -1,4 +1,4 @@
 /target
 /dist
-/data
+/data*
 *.sql

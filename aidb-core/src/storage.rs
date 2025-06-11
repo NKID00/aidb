@@ -67,17 +67,17 @@ impl Aidb {
 
     pub(crate) async fn submit(self: &mut Aidb) -> Result<()> {
         if self.superblock_dirty {
+            self.superblock_dirty = false;
             let mut block = Self::new_volatile_block();
             self.superblock.write(&mut block.cursor()).unwrap();
             self.put_block(0, block);
             self.mark_block_dirty(0);
-            self.superblock_dirty = false;
         }
 
         let mut schemas_dirty = HashSet::new();
         swap(&mut self.schemas_dirty, &mut schemas_dirty);
         for table in schemas_dirty {
-            let schema = self.get_schema(&table).await.unwrap();
+            let schema = self.schemas.remove(&table).unwrap();
             self.save_schema(&schema).await?;
             self.put_schema(table, schema);
         }
@@ -85,7 +85,7 @@ impl Aidb {
         let mut blocks_dirty = HashSet::new();
         swap(&mut self.blocks_dirty, &mut blocks_dirty);
         for index in blocks_dirty {
-            let block = self.get_block(index).await.unwrap();
+            let block = self.blocks.remove(&index).unwrap();
             self.write_physical(index, &block).await?;
             self.put_block(index, block);
         }

@@ -16,13 +16,11 @@ Try it out at [nk0.me/g/aidb](https://nk0.me/g/aidb), or run it locally with `ca
 - [x] SELECT statement
 - [ ] UPDATE statement
 - [ ] DELETE FROM statement
-- [ ] B-Tree index
-- [ ] Hash index
-- [ ] Prefix index
-- [ ] CREATE INDEX statement
-- [ ] Transaction
-- [ ] Write Ahead Journal
-- [ ] START TRANSACTION and COMMIT statement
+- [x] B-Tree index
+- [ ] EXPLAIN statement
+- [x] Transaction
+- [x] START TRANSACTION, COMMIT and ROLLBACK statement
+- [x] auto rollback on query failure
 - [x] Fancy browser-only Web-UI
 - [x] Mostly MySQL-compatible server
 - [x] Absolutely 0% AI (except for the name)

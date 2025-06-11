@@ -85,9 +85,15 @@ impl Aidb {
     }
 
     pub async fn query(&mut self, sql: impl AsRef<str>) -> Result<Response> {
+        self.superblock_backup = Some(self.superblock.clone());
         let r = self.dispatch(Self::parse(sql)?).await;
-        if !self.transaction_in_progress {
-            self.submit().await?;
+        if r.is_ok() {
+            if !self.transaction_in_progress {
+                self.submit().await?;
+            }
+        } else {
+            self.transaction_in_progress = true;
+            self.dispatch(sql::SqlStmt::Rollback).await.unwrap();
         }
         r
     }

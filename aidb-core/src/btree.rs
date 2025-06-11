@@ -1,4 +1,4 @@
-use std::ops::Bound;
+use std::{mem::swap, ops::Bound};
 
 use binrw::{BinRead, BinWrite, binrw};
 use eyre::{OptionExt, Result, eyre};
@@ -48,7 +48,19 @@ struct BTreeLeaf {
 }
 
 #[derive(Debug)]
-pub(crate) enum BTreeState {
+pub(crate) enum BTreeExactState {
+    Initialized,
+    Done,
+}
+
+impl Default for BTreeExactState {
+    fn default() -> Self {
+        Self::Initialized
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum BTreeRangeState {
     Initialized,
     Running {
         next: BlockIndex,
@@ -56,7 +68,7 @@ pub(crate) enum BTreeState {
     },
 }
 
-impl Default for BTreeState {
+impl Default for BTreeRangeState {
     fn default() -> Self {
         Self::Initialized
     }
@@ -98,7 +110,11 @@ impl Aidb {
         key: i64,
         record: DataPointer,
     ) -> Result<()> {
-        if self.select_btree(root, key).await?.is_some() {
+        if self
+            .select_btree(root, key, &mut BTreeExactState::Initialized)
+            .await?
+            .is_some()
+        {
             return Err(eyre!("unique key exists"));
         }
         self.insert_leaf(root, key, record).await
@@ -119,14 +135,25 @@ impl Aidb {
         Ok(())
     }
 
-    async fn insert_root(&mut self, root: BlockIndex, key: i64, child: BlockIndex) -> Result<()> {
+    async fn insert_root(
+        &mut self,
+        root: BlockIndex,
+        mut key: i64,
+        child: BlockIndex,
+    ) -> Result<()> {
         let mut btree_root = self.read_root(root).await?;
-        let index = btree_root
-            .children
+        let mut index = btree_root.children.len() - 1;
+        for (i, (_, criteria)) in btree_root.children[..btree_root.children.len() - 1]
             .iter()
-            .position(|(_, criteria)| *criteria > key)
-            .unwrap_or(btree_root.children.len());
-        btree_root.children.insert(index, (child, key));
+            .enumerate()
+        {
+            if key < *criteria {
+                index = i;
+                break;
+            }
+        }
+        swap(&mut btree_root.children[index].1, &mut key);
+        btree_root.children.insert(index + 1, (child, key));
         self.write_root(root, btree_root).await?;
         Ok(())
     }
@@ -162,15 +189,26 @@ impl Aidb {
         Ok(())
     }
 
-    async fn insert_node(&mut self, root: BlockIndex, key: i64, child: BlockIndex) -> Result<()> {
+    async fn insert_node(
+        &mut self,
+        root: BlockIndex,
+        mut key: i64,
+        child: BlockIndex,
+    ) -> Result<()> {
         let node_i = self.seek_node(root, key).await?;
         let mut btree_node = self.read_node(node_i).await?;
-        let index = btree_node
-            .children
+        let mut index = btree_node.children.len() - 1;
+        for (i, (_, criteria)) in btree_node.children[..btree_node.children.len() - 1]
             .iter()
-            .position(|(_, criteria)| *criteria > key)
-            .unwrap_or(btree_node.children.len());
-        btree_node.children.insert(index, (child, key));
+            .enumerate()
+        {
+            if key < *criteria {
+                index = i;
+                break;
+            }
+        }
+        swap(&mut btree_node.children[index].1, &mut key);
+        btree_node.children.insert(index + 1, (child, key));
         if btree_node.children.len() > BTREE_N + 1 {
             let (next_node_i, mut next_node_b) = self.new_block();
             let next_children = btree_node
@@ -254,25 +292,32 @@ impl Aidb {
         &mut self,
         root: BlockIndex,
         key: i64,
+        state: &mut BTreeExactState,
     ) -> Result<Option<DataPointer>> {
         if root == 0 {
             return Ok(None);
         }
-        let leaf_i = self.seek_leaf(root, key).await?;
-        let leaf = self.read_leaf(leaf_i).await?;
-        let record = leaf
-            .records
-            .into_iter()
-            .find(|(criteria, _)| key == *criteria)
-            .map(|(_, record)| record);
-        Ok(record)
+        match state {
+            BTreeExactState::Initialized => {
+                let leaf_i = self.seek_leaf(root, key).await?;
+                let leaf = self.read_leaf(leaf_i).await?;
+                let record = leaf
+                    .records
+                    .into_iter()
+                    .find(|(criteria, _)| key == *criteria)
+                    .map(|(_, record)| record);
+                *state = BTreeExactState::Done;
+                Ok(record)
+            }
+            BTreeExactState::Done => Ok(None),
+        }
     }
 
     pub(crate) async fn select_range_btree(
         &mut self,
         root: BlockIndex,
         range: (Bound<i64>, Bound<i64>),
-        state: &mut BTreeState,
+        state: &mut BTreeRangeState,
     ) -> Result<Option<DataPointer>> {
         if root == 0 {
             return Ok(None);
@@ -300,16 +345,16 @@ impl Aidb {
             Bound::Unbounded => i64::MAX,
         };
         match state {
-            BTreeState::Initialized => {
+            BTreeRangeState::Initialized => {
                 let leaf_i = self.seek_leaf(root, left_bound).await?;
                 let leaf = self.read_leaf(leaf_i).await?;
-                *state = BTreeState::Running {
+                *state = BTreeRangeState::Running {
                     next: leaf.next,
                     stream: leaf.records.into_iter(),
                 };
                 Box::pin(self.select_range_btree(root, range, state)).await
             }
-            BTreeState::Running { next, stream } => {
+            BTreeRangeState::Running { next, stream } => {
                 let mut result = vec![];
                 'seek_block: loop {
                     for (criteria, record) in stream.by_ref() {
