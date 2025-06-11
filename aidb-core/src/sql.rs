@@ -15,7 +15,7 @@ use nom::{
 use nom_language::precedence::{Assoc, Operation, binary_op, precedence, unary_op};
 use tracing::trace;
 
-use crate::{Aidb, Column, DataType, Value};
+use crate::{Aidb, Column, DataType, Value, schema::IndexType};
 
 #[derive(Debug, Clone)]
 pub enum SqlStmt {
@@ -23,8 +23,11 @@ pub enum SqlStmt {
     ShowTables,
     /// DESCRIBE | DESC table
     Describe { table: String },
-    /// CREATE TABLE table (column datatype, ...)
-    CreateTable { table: String, columns: Vec<Column> },
+    /// CREATE TABLE table (column datatype [UNIQUE], ...)
+    CreateTable {
+        table: String,
+        columns: Vec<(Column, Option<IndexType>)>,
+    },
     /// INSERT INTO table [(column, ...)] VALUES value, ...
     InsertInto {
         table: String,
@@ -296,7 +299,7 @@ fn create_table(input: &str) -> ParseResult<SqlStmt> {
                 ident,
                 delimited(
                     (multispace0, tag("("), multispace0),
-                    comma_list1(col_def),
+                    comma_list1((col_def, opt(value(IndexType::BTree, kw("UNIQUE"))))),
                     (multispace0, tag(")")),
                 ),
             ),

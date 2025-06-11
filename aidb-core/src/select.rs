@@ -3,6 +3,7 @@ use std::{
     fmt::{Display, Formatter},
     iter::repeat,
     mem::swap,
+    ops::Bound,
 };
 
 use crate::{
@@ -102,9 +103,14 @@ enum PhysicalPlan {
         first_block: BlockIndex,
         state: ScanState,
     },
-    BTree {
+    BTreeExact {
         root: BlockIndex,
         key: i64,
+        state: BTreeState,
+    },
+    BTreeRange {
+        root: BlockIndex,
+        range: (Bound<i64>, Bound<i64>),
         state: BTreeState,
     },
     Projection {
@@ -140,7 +146,8 @@ impl PhysicalPlan {
                     db.put_block(block_index, block);
                 }
             }
-            PhysicalPlan::BTree { state, .. } => {
+            PhysicalPlan::BTreeExact { .. } => {}
+            PhysicalPlan::BTreeRange { state, .. } => {
                 let mut new_state = Default::default();
                 swap(state, &mut new_state);
                 // TODO: finalize previous state
@@ -165,7 +172,8 @@ impl Display for PhysicalPlan {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             PhysicalPlan::Scan { first_block, .. } => write!(f, "@{first_block}"),
-            PhysicalPlan::BTree { root, key, .. } => write!(f, "btree@{root} = {key}"),
+            PhysicalPlan::BTreeExact { root, key, .. } => write!(f, "btree@{root} = {key}"),
+            PhysicalPlan::BTreeRange { root, range, .. } => write!(f, "btree@{root} {range:?}"),
             PhysicalPlan::Projection { columns, inner } => write!(
                 f,
                 "Π{{{}}} ({inner})",
@@ -628,7 +636,8 @@ impl Aidb {
                     }
                 }
             },
-            PhysicalPlan::BTree { .. } => todo!(),
+            PhysicalPlan::BTreeExact { .. } => todo!(),
+            PhysicalPlan::BTreeRange { .. } => todo!(),
             PhysicalPlan::Projection { columns, inner } => {
                 let Some(row) = Box::pin(self.execute_select(inner)).await? else {
                     return Ok(None);

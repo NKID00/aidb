@@ -10,7 +10,8 @@ use crate::Aidb;
 pub type BlockIndex = u64;
 pub type BlockOffset = u16;
 
-pub const BLOCK_SIZE: usize = 4 * 1024;
+/// must be less than 64K (limited by u16)
+pub const BLOCK_SIZE: usize = 64 * 1024;
 
 #[derive(Debug)]
 pub struct Block(Box<[u8; BLOCK_SIZE]>);

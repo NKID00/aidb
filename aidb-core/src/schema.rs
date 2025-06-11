@@ -5,6 +5,22 @@ use serde::{Deserialize, Serialize};
 use crate::{Aidb, BlockIndex, DataType, Response, Value};
 
 #[binrw]
+#[brw(little, repr = u8)]
+#[derive(Debug, Clone)]
+pub enum IndexType {
+    BTree = 1,
+}
+
+#[binrw]
+#[brw(little)]
+#[derive(Debug, Clone)]
+pub struct IndexInfo {
+    pub column_index: u8,
+    pub type_: IndexType,
+    pub block: BlockIndex,
+}
+
+#[binrw]
 #[brw(little)]
 #[derive(Debug, Clone)]
 pub struct Schema {
@@ -12,18 +28,22 @@ pub struct Schema {
     block_index: BlockIndex,
     next_schema_block: BlockIndex,
     #[br(temp)]
-    #[bw(calc = name.len() as u64)]
-    name_len: u64,
+    #[bw(calc = name.len() as u8)]
+    name_len: u8,
     #[br(count = name_len, try_map = |s: Vec<u8>| String::from_utf8(s))]
     #[bw(map = |s: &String| s.as_bytes())]
     name: String,
     #[br(temp)]
-    #[bw(calc = columns.len() as u64)]
-    columns_len: u64,
+    #[bw(calc = columns.len() as u8)]
+    columns_len: u8,
     #[br(count = columns_len)]
     pub(crate) columns: Vec<Column>,
+    #[br(temp)]
+    #[bw(calc = indices.len() as u8)]
+    indices_len: u8,
+    #[br(count = indices_len)]
+    pub(crate) indices: Vec<IndexInfo>,
     pub(crate) data_block: BlockIndex,
-    pub(crate) index_block: BlockIndex,
 }
 
 impl Schema {
@@ -108,6 +128,7 @@ impl Aidb {
         &mut self,
         table: String,
         columns: Vec<Column>,
+        indices: Vec<IndexInfo>,
     ) -> Result<BlockIndex> {
         let (index, mut block) = self.new_block();
         let schema = Schema {
@@ -115,8 +136,8 @@ impl Aidb {
             next_schema_block: 0,
             name: table.clone(),
             columns,
+            indices,
             data_block: 0,
-            index_block: 0,
         };
         schema.write(&mut block.cursor())?;
         self.put_schema(table.clone(), Box::new(schema));
@@ -129,11 +150,29 @@ impl Aidb {
     pub async fn create_table(
         self: &mut Aidb,
         table: String,
-        columns: Vec<Column>,
+        columns: Vec<(Column, Option<IndexType>)>,
     ) -> Result<Response> {
+        let mut schema_columns = vec![];
+        let mut schema_indices = vec![];
+        for (i, (column, index)) in columns.into_iter().enumerate() {
+            if let Some(type_) = index {
+                if column.datatype != DataType::Integer {
+                    return Err(eyre!("index is implemented on integer column only"));
+                }
+                schema_indices.push(IndexInfo {
+                    column_index: i as u8,
+                    type_,
+                    block: 0,
+                });
+            }
+            schema_columns.push(column);
+        }
+
         let mut schema_block_index = self.superblock.first_schema_block;
         if schema_block_index == 0 {
-            let index = self.new_schema_block(table, columns).await?;
+            let index = self
+                .new_schema_block(table, schema_columns, schema_indices)
+                .await?;
             self.superblock.first_schema_block = index;
             self.mark_superblock_dirty();
             return Ok(Response::Meta { affected_rows: 0 });
@@ -147,7 +186,9 @@ impl Aidb {
                 return Err(eyre!("Table exists"));
             }
             if schema.next_schema_block == 0 {
-                let index = self.new_schema_block(table, columns).await?;
+                let index = self
+                    .new_schema_block(table, schema_columns, schema_indices)
+                    .await?;
                 schema.next_schema_block = index;
                 self.mark_schema_dirty(schema.name.clone());
                 self.put_schema(schema.name.clone(), Box::new(schema));

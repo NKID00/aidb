@@ -11,6 +11,7 @@ use tracing::debug;
 
 use crate::{
     Aidb, Column, Response,
+    schema::{IndexInfo, IndexType},
     storage::{BLOCK_SIZE, BlockIndex, BlockOffset, DataPointer},
 };
 
@@ -156,9 +157,11 @@ impl Aidb {
             }
             column_indices
         };
-        let mut rows = values.into_iter();
         let schema_columns_count = schema.columns.len();
         let schema_row_size = schema.row_size() as isize;
+        let indices = &mut schema.indices;
+
+        let mut rows = values.into_iter();
         'find_block: loop {
             let mut cursor = block.cursor();
             let mut header = DataHeader::read(&mut cursor)?;
@@ -186,6 +189,33 @@ impl Aidb {
                             itertools::EitherOrBoth::Right(_) => {
                                 return Err(eyre!("too much values"));
                             }
+                        }
+                    }
+                    for IndexInfo {
+                        column_index,
+                        type_,
+                        block,
+                    } in indices.iter_mut()
+                    {
+                        match type_ {
+                            IndexType::BTree => match full_row[*column_index as usize] {
+                                Value::Integer(v) => {
+                                    let record = DataPointer {
+                                        block: index,
+                                        offset: cursor.position() as u16,
+                                    };
+                                    if *block == 0 {
+                                        *block = self.new_btree(v, record).await?;
+                                        self.mark_schema_dirty(table.clone());
+                                    } else {
+                                        self.insert_btree(*block, v, record).await?;
+                                    }
+                                }
+                                Value::Null => {
+                                    return Err(eyre!("indexed column must be non-null"));
+                                }
+                                _ => return Err(eyre!("invalid value")),
+                            },
                         }
                     }
                     self.write_row(&mut cursor, &schema.columns, full_row)
@@ -232,7 +262,7 @@ impl Aidb {
         Ok(String::from_utf8(buf)?)
     }
 
-    async fn write_text(self: &mut Aidb, s: String) -> Result<DataPointer> {
+    async fn insert_text(self: &mut Aidb, s: String) -> Result<DataPointer> {
         if s.is_empty() {
             return Ok(DataPointer {
                 block: 0,
@@ -317,7 +347,7 @@ impl Aidb {
                 (DataType::Real, Value::Real(v)) => ValueRepr::Real(v),
                 (DataType::Text, Value::Text(s)) => ValueRepr::Text {
                     len: s.len() as u16,
-                    ptr: self.write_text(s).await?,
+                    ptr: self.insert_text(s).await?,
                 },
                 _ => return Err(eyre!("invalid value")),
             });
