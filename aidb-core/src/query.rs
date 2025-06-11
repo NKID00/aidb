@@ -1,4 +1,4 @@
-use eyre::{Result, eyre};
+use eyre::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::{Aidb, data::Value, schema::Column, sql::SqlStmt};

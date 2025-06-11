@@ -1,7 +1,7 @@
 use std::ops::Bound;
 
 use binrw::{BinRead, BinWrite, binrw};
-use eyre::{OptionExt, Result};
+use eyre::{OptionExt, Result, eyre};
 
 use crate::{
     Aidb,
@@ -64,30 +64,31 @@ impl Default for BTreeState {
 
 impl Aidb {
     pub(crate) async fn new_btree(&mut self, key: i64, record: DataPointer) -> Result<BlockIndex> {
-        let (root_i, mut root_b) = self.new_block();
-        let (node_i, mut node_b) = self.new_block();
         let (leaf_i, mut leaf_b) = self.new_block();
-
         BTreeLeaf {
             next: 0,
             records: vec![(key, record)],
         }
         .write(&mut leaf_b.cursor())?;
+        self.put_block(leaf_i, leaf_b);
+        self.mark_block_dirty(leaf_i);
+
+        let (node_i, mut node_b) = self.new_block();
         BTreeNode {
             children: vec![(leaf_i, 0)],
         }
         .write(&mut node_b.cursor())?;
+        self.put_block(node_i, node_b);
+        self.mark_block_dirty(node_i);
+
+        let (root_i, mut root_b) = self.new_block();
         BTreeRoot {
             children: vec![(node_i, 0)],
         }
         .write(&mut root_b.cursor())?;
-
-        self.put_block(leaf_i, leaf_b);
-        self.mark_block_dirty(leaf_i);
-        self.put_block(node_i, node_b);
-        self.mark_block_dirty(node_i);
         self.put_block(root_i, root_b);
         self.mark_block_dirty(root_i);
+
         Ok(root_i)
     }
 
@@ -97,14 +98,41 @@ impl Aidb {
         key: i64,
         record: DataPointer,
     ) -> Result<()> {
-        todo!()
+        if self.select_btree(root, key).await?.is_some() {
+            return Err(eyre!("unique key exists"));
+        }
+        self.insert_leaf(root, key, record).await
     }
 
-    async fn seek_leaf(&mut self, root: BlockIndex, key: i64) -> Result<BTreeLeaf> {
+    async fn read_root(&mut self, root: BlockIndex) -> Result<BTreeRoot> {
         let mut root_b = self.get_block(root).await?;
         let btree_root = BTreeRoot::read(&mut root_b.cursor())?;
         self.put_block(root, root_b);
+        Ok(btree_root)
+    }
 
+    async fn write_root(&mut self, root: BlockIndex, btree_root: BTreeRoot) -> Result<()> {
+        let mut root_b = self.get_block(root).await?;
+        btree_root.write(&mut root_b.cursor())?;
+        self.put_block(root, root_b);
+        self.mark_block_dirty(root);
+        Ok(())
+    }
+
+    async fn insert_root(&mut self, root: BlockIndex, key: i64, child: BlockIndex) -> Result<()> {
+        let mut btree_root = self.read_root(root).await?;
+        let index = btree_root
+            .children
+            .iter()
+            .position(|(_, criteria)| *criteria > key)
+            .unwrap_or(btree_root.children.len());
+        btree_root.children.insert(index, (child, key));
+        self.write_root(root, btree_root).await?;
+        Ok(())
+    }
+
+    async fn seek_node(&mut self, root: BlockIndex, key: i64) -> Result<BlockIndex> {
+        let btree_root = self.read_root(root).await?;
         let mut node_i = btree_root
             .children
             .last()
@@ -116,10 +144,54 @@ impl Aidb {
                 break;
             }
         }
+        Ok(node_i)
+    }
+
+    async fn read_node(&mut self, node_i: BlockIndex) -> Result<BTreeNode> {
         let mut node_b = self.get_block(node_i).await?;
         let btree_node = BTreeNode::read(&mut node_b.cursor())?;
         self.put_block(node_i, node_b);
+        Ok(btree_node)
+    }
 
+    async fn write_node(&mut self, node_i: BlockIndex, btree_node: BTreeNode) -> Result<()> {
+        let mut node_b = self.get_block(node_i).await?;
+        btree_node.write(&mut node_b.cursor())?;
+        self.put_block(node_i, node_b);
+        self.mark_block_dirty(node_i);
+        Ok(())
+    }
+
+    async fn insert_node(&mut self, root: BlockIndex, key: i64, child: BlockIndex) -> Result<()> {
+        let node_i = self.seek_node(root, key).await?;
+        let mut btree_node = self.read_node(node_i).await?;
+        let index = btree_node
+            .children
+            .iter()
+            .position(|(_, criteria)| *criteria > key)
+            .unwrap_or(btree_node.children.len());
+        btree_node.children.insert(index, (child, key));
+        if btree_node.children.len() > BTREE_N + 1 {
+            let (next_node_i, mut next_node_b) = self.new_block();
+            let next_children = btree_node
+                .children
+                .split_off(btree_node.children.len().div_ceil(2));
+            let next_key = next_children.first().unwrap().1;
+            BTreeNode {
+                children: next_children,
+            }
+            .write(&mut next_node_b.cursor())?;
+            self.put_block(next_node_i, next_node_b);
+            self.mark_block_dirty(next_node_i);
+            self.insert_root(root, next_key, next_node_i).await?;
+        }
+        self.write_node(node_i, btree_node).await?;
+        Ok(())
+    }
+
+    async fn seek_leaf(&mut self, root: BlockIndex, key: i64) -> Result<BlockIndex> {
+        let node_i = self.seek_node(root, key).await?;
+        let btree_node = self.read_node(node_i).await?;
         let mut leaf_i = btree_node
             .children
             .last()
@@ -131,11 +203,51 @@ impl Aidb {
                 break;
             }
         }
+        Ok(leaf_i)
+    }
+
+    async fn read_leaf(&mut self, leaf_i: BlockIndex) -> Result<BTreeLeaf> {
         let mut leaf_b = self.get_block(leaf_i).await?;
         let btree_leaf = BTreeLeaf::read(&mut leaf_b.cursor())?;
         self.put_block(leaf_i, leaf_b);
-
         Ok(btree_leaf)
+    }
+
+    async fn write_leaf(&mut self, leaf_i: BlockIndex, btree_leaf: BTreeLeaf) -> Result<BTreeLeaf> {
+        let mut leaf_b = self.get_block(leaf_i).await?;
+        btree_leaf.write(&mut leaf_b.cursor())?;
+        self.put_block(leaf_i, leaf_b);
+        self.mark_block_dirty(leaf_i);
+        Ok(btree_leaf)
+    }
+
+    async fn insert_leaf(&mut self, root: BlockIndex, key: i64, record: DataPointer) -> Result<()> {
+        let leaf_i = self.seek_leaf(root, key).await?;
+        let mut btree_leaf = self.read_leaf(leaf_i).await?;
+        let index = btree_leaf
+            .records
+            .iter()
+            .position(|(criteria, _)| *criteria > key)
+            .unwrap_or(btree_leaf.records.len());
+        btree_leaf.records.insert(index, (key, record));
+        if btree_leaf.records.len() > BTREE_N + 1 {
+            let (next_leaf_i, mut next_leaf_b) = self.new_block();
+            let next_records = btree_leaf
+                .records
+                .split_off(btree_leaf.records.len().div_ceil(2));
+            let next_key = next_records.first().unwrap().0;
+            BTreeLeaf {
+                next: btree_leaf.next,
+                records: next_records,
+            }
+            .write(&mut next_leaf_b.cursor())?;
+            self.put_block(next_leaf_i, next_leaf_b);
+            self.mark_block_dirty(next_leaf_i);
+            btree_leaf.next = next_leaf_i;
+            self.insert_node(root, next_key, next_leaf_i).await?;
+        }
+        self.write_leaf(leaf_i, btree_leaf).await?;
+        Ok(())
     }
 
     pub(crate) async fn select_btree(
@@ -146,7 +258,8 @@ impl Aidb {
         if root == 0 {
             return Ok(None);
         }
-        let leaf = self.seek_leaf(root, key).await?;
+        let leaf_i = self.seek_leaf(root, key).await?;
+        let leaf = self.read_leaf(leaf_i).await?;
         let record = leaf
             .records
             .into_iter()
@@ -188,7 +301,8 @@ impl Aidb {
         };
         match state {
             BTreeState::Initialized => {
-                let leaf = self.seek_leaf(root, left_bound).await?;
+                let leaf_i = self.seek_leaf(root, left_bound).await?;
+                let leaf = self.read_leaf(leaf_i).await?;
                 *state = BTreeState::Running {
                     next: leaf.next,
                     stream: leaf.records.into_iter(),

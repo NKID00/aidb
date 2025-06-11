@@ -228,7 +228,7 @@ impl Aidb {
             .await?;
         debug!(logical = ?plan);
         let mut plan = self.build_physical_plan(plan).await?;
-        debug!("physical = {plan}");
+        debug!(physical = plan.to_string());
         let mut rows = vec![];
         while let Some(row) = self.execute_select(&mut plan).await? {
             debug!(?row);
@@ -492,10 +492,8 @@ impl Aidb {
         let find_column_index = |table: &str, column: &str| -> ColumnIndex {
             columns
                 .iter()
-                .enumerate()
-                .find(|(_, (t, c, _))| t == table && c == column)
+                .position(|(t, c, _)| t == table && c == column)
                 .unwrap()
-                .0
         };
         let find_column_index_info =
             |table: &str, column: &str| -> Option<(IndexType, BlockIndex)> {

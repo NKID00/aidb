@@ -146,9 +146,7 @@ impl Aidb {
                     schema
                         .columns
                         .iter()
-                        .enumerate()
-                        .find(|(_i, column)| column.name == name)
-                        .map(|(i, _)| i)
+                        .position(|column| column.name == name)
                         .ok_or_eyre("column not found")
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -200,6 +198,7 @@ impl Aidb {
                         match type_ {
                             IndexType::BTree => match full_row[*column_index as usize] {
                                 Value::Integer(v) => {
+                                    debug!(key = v, "insert btree");
                                     let record = DataPointer {
                                         block: index,
                                         offset: cursor.position() as u16,
