@@ -55,6 +55,12 @@ pub enum SqlStmt {
     },
     /// FLUSH TABLES
     FlushTables,
+    /// START TRANSACTION
+    StartTransaction,
+    /// COMMIT
+    Commit,
+    /// ROLLBACK
+    Rollback,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +227,9 @@ fn stmt(input: &str) -> ParseResult<SqlStmt> {
             insert_into,
             select,
             flush_tables,
+            start_transaction,
+            commit,
+            rollback,
         )),
         (multispace0, opt(tag(";")), multispace0, eof),
     )
@@ -540,6 +549,22 @@ fn flush_tables(input: &str) -> ParseResult<SqlStmt> {
         (kw_preceded("FLUSH"), tag_no_case("TABLES")),
     )
     .parse(input)
+}
+
+fn start_transaction(input: &str) -> ParseResult<SqlStmt> {
+    value(
+        SqlStmt::StartTransaction,
+        (kw_preceded("START"), tag_no_case("TRANSACTION")),
+    )
+    .parse(input)
+}
+
+fn commit(input: &str) -> ParseResult<SqlStmt> {
+    value(SqlStmt::Commit, tag_no_case("COMMIT")).parse(input)
+}
+
+fn rollback(input: &str) -> ParseResult<SqlStmt> {
+    value(SqlStmt::Rollback, tag_no_case("ROLLBACK")).parse(input)
 }
 
 #[cfg(test)]

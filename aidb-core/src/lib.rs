@@ -38,6 +38,8 @@ pub struct Aidb {
     pub(crate) superblock_dirty: bool,
     pub(crate) schemas: HashMap<String, Box<Schema>>,
     pub(crate) schemas_dirty: HashSet<String>,
+    pub(crate) transaction_in_progress: bool,
+    pub(crate) superblock_backup: Option<SuperBlock>,
 }
 
 impl Aidb {
@@ -57,6 +59,8 @@ impl Aidb {
             superblock_dirty: true,
             schemas: HashMap::new(),
             schemas_dirty: HashSet::new(),
+            transaction_in_progress: false,
+            superblock_backup: None,
         };
         this.submit().await.unwrap();
         this
@@ -72,6 +76,8 @@ impl Aidb {
             superblock_dirty: false,
             schemas: HashMap::new(),
             schemas_dirty: HashSet::new(),
+            transaction_in_progress: false,
+            superblock_backup: None,
         };
         this.load_superblock().await?;
         this.submit().await?;
@@ -80,7 +86,9 @@ impl Aidb {
 
     pub async fn query(&mut self, sql: impl AsRef<str>) -> Result<Response> {
         let r = self.dispatch(Self::parse(sql)?).await;
-        self.submit().await?;
+        if !self.transaction_in_progress {
+            self.submit().await?;
+        }
         r
     }
 
@@ -89,8 +97,7 @@ impl Aidb {
         sql: impl AsRef<str>,
     ) -> Result<(Response, BlockIoLog)> {
         self.reset_block_io_log();
-        let result = self.dispatch(Self::parse(sql)?).await;
-        self.submit().await?;
+        let result = self.query(sql).await;
         result.map(|r| (r, self.get_block_io_log()))
     }
 

@@ -1,4 +1,4 @@
-use eyre::Result;
+use eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
 
 use crate::{Aidb, data::Value, schema::Column, sql::SqlStmt};
@@ -37,9 +37,41 @@ impl Aidb {
             SqlStmt::Update { .. } => todo!(),
             SqlStmt::DeleteFrom { .. } => todo!(),
             SqlStmt::FlushTables => {
-                self.submit().await?;
+                if self.transaction_in_progress {
+                    return Ok(Response::Meta { affected_rows: 0 });
+                }
                 self.schemas.clear();
                 self.blocks.clear();
+                Ok(Response::Meta { affected_rows: 0 })
+            }
+            SqlStmt::StartTransaction => {
+                if self.transaction_in_progress {
+                    return Ok(Response::Meta { affected_rows: 0 });
+                }
+                self.superblock_backup = Some(self.superblock.clone());
+                self.transaction_in_progress = true;
+                Ok(Response::Meta { affected_rows: 0 })
+            }
+            SqlStmt::Commit => {
+                if !self.transaction_in_progress {
+                    return Ok(Response::Meta { affected_rows: 0 });
+                }
+                self.superblock_backup = None;
+                self.transaction_in_progress = false;
+                Ok(Response::Meta { affected_rows: 0 })
+            }
+            SqlStmt::Rollback => {
+                if !self.transaction_in_progress {
+                    return Ok(Response::Meta { affected_rows: 0 });
+                }
+                self.schemas.clear();
+                self.schemas_dirty.clear();
+                self.blocks.clear();
+                self.blocks_dirty.clear();
+                self.superblock = self.superblock_backup.take().unwrap();
+                self.superblock_dirty = false;
+                self.superblock_backup = None;
+                self.transaction_in_progress = false;
                 Ok(Response::Meta { affected_rows: 0 })
             }
         }
