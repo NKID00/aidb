@@ -49,7 +49,7 @@ struct BTreeLeaf {
 
 #[derive(Debug)]
 pub(crate) enum BTreeState {
-    Initalized,
+    Initialized,
     Running {
         next: BlockIndex,
         stream: std::vec::IntoIter<(i64, DataPointer)>,
@@ -58,7 +58,7 @@ pub(crate) enum BTreeState {
 
 impl Default for BTreeState {
     fn default() -> Self {
-        Self::Initalized
+        Self::Initialized
     }
 }
 
@@ -143,6 +143,9 @@ impl Aidb {
         root: BlockIndex,
         key: i64,
     ) -> Result<Option<DataPointer>> {
+        if root == 0 {
+            return Ok(None);
+        }
         let leaf = self.seek_leaf(root, key).await?;
         let record = leaf
             .records
@@ -158,6 +161,9 @@ impl Aidb {
         range: (Bound<i64>, Bound<i64>),
         state: &mut BTreeState,
     ) -> Result<Option<DataPointer>> {
+        if root == 0 {
+            return Ok(None);
+        }
         let left_bound = match range.0 {
             Bound::Included(v) => v,
             Bound::Excluded(v) => {
@@ -181,7 +187,7 @@ impl Aidb {
             Bound::Unbounded => i64::MAX,
         };
         match state {
-            BTreeState::Initalized => {
+            BTreeState::Initialized => {
                 let leaf = self.seek_leaf(root, left_bound).await?;
                 *state = BTreeState::Running {
                     next: leaf.next,
@@ -192,7 +198,7 @@ impl Aidb {
             BTreeState::Running { next, stream } => {
                 let mut result = vec![];
                 'seek_block: loop {
-                    while let Some((criteria, record)) = stream.next() {
+                    for (criteria, record) in stream.by_ref() {
                         if criteria < left_bound {
                             continue;
                         } else if criteria > right_bound {

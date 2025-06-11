@@ -267,10 +267,16 @@ fn datatype(input: &str) -> ParseResult<DataType> {
     .parse(input)
 }
 
-fn col_def(input: &str) -> ParseResult<Column> {
+fn col_def(input: &str) -> ParseResult<(Column, Option<IndexType>)> {
     map(
-        separated_pair(ident, multispace1, datatype),
-        |(name, datatype)| Column { name, datatype },
+        (
+            separated_pair(ident, multispace1, datatype),
+            opt(preceded(
+                multispace1,
+                value(IndexType::BTree, tag_no_case("UNIQUE")),
+            )),
+        ),
+        |((name, datatype), index)| (Column { name, datatype }, index),
     )
     .parse(input)
 }
@@ -299,7 +305,7 @@ fn create_table(input: &str) -> ParseResult<SqlStmt> {
                 ident,
                 delimited(
                     (multispace0, tag("("), multispace0),
-                    comma_list1((col_def, opt(value(IndexType::BTree, kw("UNIQUE"))))),
+                    comma_list1(col_def),
                     (multispace0, tag(")")),
                 ),
             ),

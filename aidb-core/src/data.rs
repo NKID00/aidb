@@ -212,7 +212,7 @@ impl Aidb {
                                     }
                                 }
                                 Value::Null => {
-                                    return Err(eyre!("indexed column must be non-null"));
+                                    return Err(eyre!("indexed column must not be NULL"));
                                 }
                                 _ => return Err(eyre!("invalid value")),
                             },

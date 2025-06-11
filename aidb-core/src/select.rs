@@ -10,7 +10,7 @@ use crate::{
     Aidb, Column, DataType, Response, Row, Value,
     btree::BTreeState,
     data::DataHeader,
-    schema::IndexInfo,
+    schema::{IndexInfo, IndexType},
     sql::{SqlCol, SqlColOrExpr, SqlOn, SqlRel, SqlSelectTarget, SqlWhere},
     storage::{BLOCK_SIZE, Block, BlockIndex, BlockOffset},
 };
@@ -65,7 +65,7 @@ enum SelectionConstraint {
 
 #[derive(Debug)]
 enum ScanState {
-    Initalized,
+    Initialized,
     Running {
         block_index: BlockIndex,
         next_block_index: BlockIndex,
@@ -76,7 +76,7 @@ enum ScanState {
 
 impl Default for ScanState {
     fn default() -> Self {
-        Self::Initalized
+        Self::Initialized
     }
 }
 
@@ -145,7 +145,9 @@ impl PhysicalPlan {
                 }
             }
             PhysicalPlan::BTreeExact { .. } => {}
-            PhysicalPlan::BTreeRange { .. } => {}
+            PhysicalPlan::BTreeRange { state, .. } => {
+                *state = BTreeState::Initialized;
+            }
             PhysicalPlan::Projection { inner, .. } => inner.reset(db),
             PhysicalPlan::CartesianProduct { inner, state } => {
                 for plan in inner {
@@ -466,11 +468,11 @@ impl Aidb {
         Ok((headers, plan))
     }
 
-    async fn build_physical_plan(&mut self, plan: LogicalQueryPlan) -> Result<PhysicalPlan> {
+    async fn build_physical_plan(&mut self, mut logical: LogicalQueryPlan) -> Result<PhysicalPlan> {
         let mut columns = vec![];
         let mut row_sizes = HashMap::new();
         let mut first_blocks = HashMap::new();
-        for table in plan.tables.iter() {
+        for table in logical.tables.iter() {
             let schema = self.get_schema(table).await?;
             row_sizes.insert(table.clone(), schema.row_size());
             first_blocks.insert(table.clone(), schema.data_block);
@@ -495,59 +497,97 @@ impl Aidb {
                 .unwrap()
                 .0
         };
+        let find_column_index_info =
+            |table: &str, column: &str| -> Option<(IndexType, BlockIndex)> {
+                columns
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (t, c, _))| t == table && c == column)
+                    .unwrap()
+                    .1
+                    .2
+            };
 
-        let mut inner_plans = vec![];
-        for table in plan.tables.iter() {
-            for constraint in plan.constraints {
-                match constraint {
-                    QueryConstraint::EqColumn { .. } => {}
-                    QueryConstraint::EqConst {
-                        table,
-                        column,
-                        value,
-                    } => {
-                        todo!()
+        let mut plans = vec![];
+        for table in logical.tables.iter() {
+            let mut indexed = false;
+            let mut constraints_remaining = vec![];
+            for constraint in logical.constraints.into_iter() {
+                if let QueryConstraint::EqConst {
+                    table,
+                    column,
+                    value,
+                } = &constraint
+                    && let Some((type_, block)) = find_column_index_info(table, column)
+                {
+                    match type_ {
+                        IndexType::BTree => {
+                            let key = match value.clone() {
+                                Value::Integer(key) => key,
+                                Value::Null => {
+                                    return Err(eyre!("indexed column must not be NULL"));
+                                }
+                                _ => return Err(eyre!("datatype mismatch")),
+                            };
+                            plans.push(PhysicalPlan::BTreeExact { root: block, key });
+                            indexed = true;
+                            continue;
+                        }
                     }
                 }
+                constraints_remaining.push(constraint);
             }
-            inner_plans.push(PhysicalPlan::Scan {
-                row_size: *row_sizes.get(table).unwrap(),
-                first_block: *first_blocks.get(table).unwrap(),
-                state: Default::default(),
-            })
+            logical.constraints = constraints_remaining;
+            if !indexed {
+                plans.push(PhysicalPlan::Scan {
+                    row_size: *row_sizes.get(table).unwrap(),
+                    first_block: *first_blocks.get(table).unwrap(),
+                    state: Default::default(),
+                })
+            }
         }
 
-        let product = PhysicalPlan::CartesianProduct {
-            inner: inner_plans,
-            state: Default::default(),
+        let plan = if plans.len() == 1 {
+            plans.pop().unwrap()
+        } else {
+            PhysicalPlan::CartesianProduct {
+                inner: plans,
+                state: Default::default(),
+            }
         };
 
-        let selection = PhysicalPlan::Selection {
-            constraints: plan
-                .constraints
-                .into_iter()
-                .map(|constraint| match constraint {
-                    QueryConstraint::EqColumn {
-                        table_lhs,
-                        column_lhs,
-                        table_rhs,
-                        column_rhs,
-                    } => SelectionConstraint::EqColumn(
-                        find_column_index(&table_lhs, &column_lhs),
-                        find_column_index(&table_rhs, &column_rhs),
-                    ),
-                    QueryConstraint::EqConst {
-                        table,
-                        column,
-                        value,
-                    } => SelectionConstraint::EqConst(find_column_index(&table, &column), value),
-                })
-                .collect(),
-            inner: Box::new(product),
+        let plan = if logical.constraints.is_empty() {
+            plan
+        } else {
+            PhysicalPlan::Selection {
+                constraints: logical
+                    .constraints
+                    .into_iter()
+                    .map(|constraint| match constraint {
+                        QueryConstraint::EqColumn {
+                            table_lhs,
+                            column_lhs,
+                            table_rhs,
+                            column_rhs,
+                        } => SelectionConstraint::EqColumn(
+                            find_column_index(&table_lhs, &column_lhs),
+                            find_column_index(&table_rhs, &column_rhs),
+                        ),
+                        QueryConstraint::EqConst {
+                            table,
+                            column,
+                            value,
+                        } => {
+                            SelectionConstraint::EqConst(find_column_index(&table, &column), value)
+                        }
+                    })
+                    .collect(),
+                inner: Box::new(plan),
+            }
         };
 
-        let projection = PhysicalPlan::Projection {
-            columns: plan
+        let plan = PhysicalPlan::Projection {
+            columns: logical
                 .columns
                 .into_iter()
                 .map(|column| match column {
@@ -557,16 +597,16 @@ impl Aidb {
                     QueryColumn::Const(value) => ProjectionColumn::Const(value),
                 })
                 .collect(),
-            inner: Box::new(selection),
+            inner: Box::new(plan),
         };
 
-        let plan = match plan.limit {
+        let plan = match logical.limit {
             Some(limit) => PhysicalPlan::Limit {
                 limit,
-                inner: Box::new(projection),
+                inner: Box::new(plan),
                 state: Default::default(),
             },
-            None => projection,
+            None => plan,
         };
 
         Ok(plan)
@@ -580,7 +620,7 @@ impl Aidb {
                 first_block,
                 state,
             } => match state {
-                ScanState::Initalized => {
+                ScanState::Initialized => {
                     debug!(first_block);
                     if *first_block == 0 {
                         Ok(None)
@@ -615,7 +655,7 @@ impl Aidb {
                         cursor.set_position(position + *row_size as u64);
                     }
                     if *next_block_index == 0 {
-                        let mut new_state = ScanState::Initalized;
+                        let mut new_state = ScanState::Initialized;
                         swap(state, &mut new_state);
                         let ScanState::Running {
                             block_index, block, ..
