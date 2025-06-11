@@ -1,4 +1,4 @@
-use std::ops::RangeBounds;
+use std::ops::Bound;
 
 use binrw::{BinRead, BinWrite, binrw};
 use eyre::{OptionExt, Result};
@@ -47,6 +47,21 @@ struct BTreeLeaf {
     records: Vec<(i64, DataPointer)>,
 }
 
+#[derive(Debug)]
+pub(crate) enum BTreeState {
+    Initalized,
+    Running {
+        next: BlockIndex,
+        stream: std::vec::IntoIter<(i64, DataPointer)>,
+    },
+}
+
+impl Default for BTreeState {
+    fn default() -> Self {
+        Self::Initalized
+    }
+}
+
 impl Aidb {
     pub(crate) async fn new_btree(&mut self, key: i64, record: DataPointer) -> Result<BlockIndex> {
         let (root_i, mut root_b) = self.new_block();
@@ -85,11 +100,7 @@ impl Aidb {
         todo!()
     }
 
-    pub(crate) async fn select_btree(
-        &mut self,
-        root: BlockIndex,
-        key: i64,
-    ) -> Result<Option<DataPointer>> {
+    async fn seek_leaf(&mut self, root: BlockIndex, key: i64) -> Result<BTreeLeaf> {
         let mut root_b = self.get_block(root).await?;
         let btree_root = BTreeRoot::read(&mut root_b.cursor())?;
         self.put_block(root, root_b);
@@ -124,7 +135,16 @@ impl Aidb {
         let btree_leaf = BTreeLeaf::read(&mut leaf_b.cursor())?;
         self.put_block(leaf_i, leaf_b);
 
-        let record = btree_leaf
+        Ok(btree_leaf)
+    }
+
+    pub(crate) async fn select_btree(
+        &mut self,
+        root: BlockIndex,
+        key: i64,
+    ) -> Result<Option<DataPointer>> {
+        let leaf = self.seek_leaf(root, key).await?;
+        let record = leaf
             .records
             .into_iter()
             .find(|(criteria, _)| key == *criteria)
@@ -135,8 +155,65 @@ impl Aidb {
     pub(crate) async fn select_range_btree(
         &mut self,
         root: BlockIndex,
-        range: impl RangeBounds<i64>,
-    ) -> Result<Vec<DataPointer>> {
-        todo!()
+        range: (Bound<i64>, Bound<i64>),
+        state: &mut BTreeState,
+    ) -> Result<Option<DataPointer>> {
+        let left_bound = match range.0 {
+            Bound::Included(v) => v,
+            Bound::Excluded(v) => {
+                if v == i64::MAX {
+                    return Ok(None);
+                } else {
+                    v + 1
+                }
+            }
+            Bound::Unbounded => i64::MIN,
+        };
+        let right_bound = match range.0 {
+            Bound::Included(v) => v,
+            Bound::Excluded(v) => {
+                if v == i64::MIN {
+                    return Ok(None);
+                } else {
+                    v - 1
+                }
+            }
+            Bound::Unbounded => i64::MAX,
+        };
+        match state {
+            BTreeState::Initalized => {
+                let leaf = self.seek_leaf(root, left_bound).await?;
+                *state = BTreeState::Running {
+                    next: leaf.next,
+                    stream: leaf.records.into_iter(),
+                };
+                Box::pin(self.select_range_btree(root, range, state)).await
+            }
+            BTreeState::Running { next, stream } => {
+                let mut result = vec![];
+                'seek_block: loop {
+                    while let Some((criteria, record)) = stream.next() {
+                        if criteria < left_bound {
+                            continue;
+                        } else if criteria > right_bound {
+                            break 'seek_block;
+                        } else {
+                            result.push(record);
+                        }
+                    }
+                    if *next == 0 {
+                        break;
+                    } else {
+                        let next_leaf_i = *next;
+                        let mut next_leaf_b = self.get_block(next_leaf_i).await?;
+                        let leaf = BTreeLeaf::read(&mut next_leaf_b.cursor())?;
+                        *next = leaf.next;
+                        *stream = leaf.records.into_iter();
+                        self.put_block(next_leaf_i, next_leaf_b);
+                    }
+                }
+                Ok(None)
+            }
+        }
     }
 }

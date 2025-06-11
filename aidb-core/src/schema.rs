@@ -6,7 +6,7 @@ use crate::{Aidb, BlockIndex, DataType, Response, Value};
 
 #[binrw]
 #[brw(little, repr = u8)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexType {
     BTree = 1,
 }

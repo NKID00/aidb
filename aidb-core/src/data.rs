@@ -162,7 +162,7 @@ impl Aidb {
         let indices = &mut schema.indices;
 
         let mut rows = values.into_iter();
-        'find_block: loop {
+        'seek_block: loop {
             let mut cursor = block.cursor();
             let mut header = DataHeader::read(&mut cursor)?;
             let mut dirty = false;
@@ -177,7 +177,7 @@ impl Aidb {
                     let Some(row) = rows.next() else {
                         self.mark_block_dirty(index);
                         self.put_block(index, block);
-                        break 'find_block;
+                        break 'seek_block;
                     };
                     let mut full_row = vec![Value::Null; schema_columns_count];
                     for item in column_indices.iter().zip_longest(row) {

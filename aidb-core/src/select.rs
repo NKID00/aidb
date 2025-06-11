@@ -8,7 +8,9 @@ use std::{
 
 use crate::{
     Aidb, Column, DataType, Response, Row, Value,
+    btree::BTreeState,
     data::DataHeader,
+    schema::IndexInfo,
     sql::{SqlCol, SqlColOrExpr, SqlOn, SqlRel, SqlSelectTarget, SqlWhere},
     storage::{BLOCK_SIZE, Block, BlockIndex, BlockOffset},
 };
@@ -78,9 +80,6 @@ impl Default for ScanState {
     }
 }
 
-#[derive(Debug, Default)]
-struct BTreeState {}
-
 #[derive(Debug)]
 struct CartesianProductState {
     first_run: bool,
@@ -106,7 +105,6 @@ enum PhysicalPlan {
     BTreeExact {
         root: BlockIndex,
         key: i64,
-        state: BTreeState,
     },
     BTreeRange {
         root: BlockIndex,
@@ -147,11 +145,7 @@ impl PhysicalPlan {
                 }
             }
             PhysicalPlan::BTreeExact { .. } => {}
-            PhysicalPlan::BTreeRange { state, .. } => {
-                let mut new_state = Default::default();
-                swap(state, &mut new_state);
-                // TODO: finalize previous state
-            }
+            PhysicalPlan::BTreeRange { .. } => {}
             PhysicalPlan::Projection { inner, .. } => inner.reset(db),
             PhysicalPlan::CartesianProduct { inner, state } => {
                 for plan in inner {
@@ -480,35 +474,53 @@ impl Aidb {
             let schema = self.get_schema(table).await?;
             row_sizes.insert(table.clone(), schema.row_size());
             first_blocks.insert(table.clone(), schema.data_block);
-            columns.extend(
-                schema
-                    .columns
-                    .iter()
-                    .map(|column| (table.clone(), column.name.clone())),
-            );
+            for (i, column) in schema.columns.iter().enumerate() {
+                columns.push((
+                    table.clone(),
+                    column.name.clone(),
+                    schema
+                        .indices
+                        .iter()
+                        .find(|IndexInfo { column_index, .. }| i == *column_index as usize)
+                        .map(|IndexInfo { type_, block, .. }| (*type_, *block)),
+                ));
+            }
             self.put_schema(table.clone(), schema);
         }
         let find_column_index = |table: &str, column: &str| -> ColumnIndex {
             columns
                 .iter()
                 .enumerate()
-                .find(|(_, (t, c))| t == table && c == column)
+                .find(|(_, (t, c, _))| t == table && c == column)
                 .unwrap()
                 .0
         };
 
-        let product = Box::new(PhysicalPlan::CartesianProduct {
-            inner: plan
-                .tables
-                .iter()
-                .map(|table| PhysicalPlan::Scan {
-                    row_size: *row_sizes.get(table).unwrap(),
-                    first_block: *first_blocks.get(table).unwrap(),
-                    state: Default::default(),
-                })
-                .collect(),
+        let mut inner_plans = vec![];
+        for table in plan.tables.iter() {
+            for constraint in plan.constraints {
+                match constraint {
+                    QueryConstraint::EqColumn { .. } => {}
+                    QueryConstraint::EqConst {
+                        table,
+                        column,
+                        value,
+                    } => {
+                        todo!()
+                    }
+                }
+            }
+            inner_plans.push(PhysicalPlan::Scan {
+                row_size: *row_sizes.get(table).unwrap(),
+                first_block: *first_blocks.get(table).unwrap(),
+                state: Default::default(),
+            })
+        }
+
+        let product = PhysicalPlan::CartesianProduct {
+            inner: inner_plans,
             state: Default::default(),
-        });
+        };
 
         let selection = PhysicalPlan::Selection {
             constraints: plan
@@ -531,7 +543,7 @@ impl Aidb {
                     } => SelectionConstraint::EqConst(find_column_index(&table, &column), value),
                 })
                 .collect(),
-            inner: product,
+            inner: Box::new(product),
         };
 
         let projection = PhysicalPlan::Projection {
@@ -636,8 +648,26 @@ impl Aidb {
                     }
                 }
             },
-            PhysicalPlan::BTreeExact { .. } => todo!(),
-            PhysicalPlan::BTreeRange { .. } => todo!(),
+            PhysicalPlan::BTreeExact { root, key } => {
+                let Some(ptr) = self.select_btree(*root, *key).await? else {
+                    return Ok(None);
+                };
+                let mut block = self.get_block(ptr.block).await?;
+                let mut cursor = block.cursor_at(ptr.offset);
+                let row = self.read_row(&mut cursor).await?;
+                self.put_block(ptr.block, block);
+                Ok(row)
+            }
+            PhysicalPlan::BTreeRange { root, range, state } => {
+                let Some(ptr) = self.select_range_btree(*root, *range, state).await? else {
+                    return Ok(None);
+                };
+                let mut block = self.get_block(ptr.block).await?;
+                let mut cursor = block.cursor_at(ptr.offset);
+                let row = self.read_row(&mut cursor).await?;
+                self.put_block(ptr.block, block);
+                Ok(row)
+            }
             PhysicalPlan::Projection { columns, inner } => {
                 let Some(row) = Box::pin(self.execute_select(inner)).await? else {
                     return Ok(None);
