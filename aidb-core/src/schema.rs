@@ -54,7 +54,7 @@ impl Schema {
             .map(|column| match column.datatype {
                 DataType::Integer => 9,
                 DataType::Real => 9,
-                DataType::Text => 19,
+                DataType::Text => 13,
             })
             .sum::<usize>()
     }
