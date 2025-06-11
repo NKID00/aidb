@@ -9,13 +9,14 @@ Try it out at [nk0.me/g/aidb](https://nk0.me/g/aidb), or run it locally with `ca
 - [x] Schema storage
 - [x] Integer, Real and Text datatypes
 - [x] CREATE TABLE statement
+- [ ] DROP TABLE statement
 - [x] Storage engine
 - [x] Logical query plan and physical query plan
 - [x] Query engine
 - [x] INSERT INTO statement
 - [x] SELECT statement
-- [ ] UPDATE statement
-- [ ] DELETE FROM statement
+- [x] UPDATE statement
+- [x] DELETE FROM statement
 - [x] B-Tree index
 - [x] EXPLAIN statement
 - [x] Transaction

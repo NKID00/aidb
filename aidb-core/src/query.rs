@@ -41,8 +41,8 @@ impl Aidb {
                 where_,
                 limit,
             } => self.explain(columns, table, join_on, where_, limit).await,
-            SqlStmt::Update { .. } => todo!(),
-            SqlStmt::DeleteFrom { .. } => todo!(),
+            SqlStmt::Update { table, set, where_ } => self.update(table, set, where_).await,
+            SqlStmt::DeleteFrom { table, where_ } => self.delete_from(table, where_).await,
             SqlStmt::FlushTables => {
                 if self.transaction_in_progress {
                     return Ok(Response::Meta { affected_rows: 0 });

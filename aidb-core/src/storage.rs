@@ -1,4 +1,9 @@
-use std::{collections::HashSet, io::Cursor, mem::swap};
+use std::{
+    collections::HashSet,
+    fmt::{Display, Formatter},
+    io::Cursor,
+    mem::swap,
+};
 
 use binrw::{BinWrite, binrw};
 use eyre::Result;
@@ -34,6 +39,12 @@ impl Block {
 pub struct DataPointer {
     pub block: BlockIndex,
     pub offset: BlockOffset,
+}
+
+impl Display for DataPointer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "@{}:{}", self.block, self.offset)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

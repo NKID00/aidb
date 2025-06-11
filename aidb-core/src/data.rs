@@ -77,7 +77,7 @@ impl Display for Value {
             Value::Null => write!(f, "NULL"),
             Value::Integer(v) => write!(f, "{v}"),
             Value::Real(v) => write!(f, "{v}"),
-            Value::Text(v) => write!(f, "{}", v.escape_debug()),
+            Value::Text(v) => write!(f, "'{}'", v.escape_debug()),
         }
     }
 }
@@ -108,6 +108,19 @@ pub(crate) enum ValueRepr {
     Text { len: u16, ptr: DataPointer },
     #[brw(magic = 6u8)]
     TextNull(#[brw(pad_size_to = 12)] ()),
+}
+
+impl ValueRepr {
+    pub fn datatype(&self) -> DataType {
+        match self {
+            ValueRepr::Integer(_) => DataType::Integer,
+            ValueRepr::IntegerNull(()) => DataType::Integer,
+            ValueRepr::Real(_) => DataType::Real,
+            ValueRepr::RealNull(()) => DataType::Real,
+            ValueRepr::Text { .. } => DataType::Text,
+            ValueRepr::TextNull(()) => DataType::Text,
+        }
+    }
 }
 
 #[binrw]
@@ -310,7 +323,7 @@ impl Aidb {
             return Ok(None);
         }
         cursor.set_position(position);
-        debug!(position = cursor.position(), "read_row");
+        debug!(pos = cursor.position(), "read_row");
         let row = RowRepr::read(cursor)?;
         let mut values = vec![];
         for value in row.values {
@@ -335,7 +348,7 @@ impl Aidb {
     where
         Cursor<T>: Write,
     {
-        debug!(position = cursor.position(), "write_row");
+        debug!(pos = cursor.position(), "write_row");
         let mut values = vec![];
         for (Column { datatype, .. }, value) in columns.iter().zip(row.into_iter()) {
             values.push(match (datatype, value) {
@@ -356,6 +369,52 @@ impl Aidb {
             values,
         }
         .write(cursor)?;
+        Ok(())
+    }
+
+    pub(crate) async fn update_row<T: AsRef<[u8]>>(
+        &mut self,
+        cursor: &mut Cursor<T>,
+        set: Vec<(usize, Value)>,
+    ) -> Result<()>
+    where
+        Cursor<T>: Write,
+    {
+        let pos = cursor.position();
+        debug!(pos, "update_row");
+        let mut values = RowRepr::read(cursor)?.values;
+        for (index, value) in set {
+            values[index] = match (values[index].datatype(), value) {
+                (DataType::Integer, Value::Null) => ValueRepr::IntegerNull(()),
+                (DataType::Real, Value::Null) => ValueRepr::RealNull(()),
+                (DataType::Text, Value::Null) => ValueRepr::TextNull(()),
+                (DataType::Integer, Value::Integer(v)) => ValueRepr::Integer(v),
+                (DataType::Real, Value::Real(v)) => ValueRepr::Real(v),
+                (DataType::Text, Value::Text(s)) => ValueRepr::Text {
+                    len: s.len() as u16,
+                    ptr: self.insert_text(s).await?,
+                },
+                _ => return Err(eyre!("invalid value")),
+            };
+        }
+        cursor.set_position(pos);
+        RowRepr {
+            len: values.len() as i8,
+            values,
+        }
+        .write(cursor)?;
+        Ok(())
+    }
+
+    pub(crate) async fn delete_row<T: AsRef<[u8]>>(&mut self, cursor: &mut Cursor<T>) -> Result<()>
+    where
+        Cursor<T>: Write,
+    {
+        let pos = cursor.position();
+        debug!(pos, "delete_row");
+        let len = i8::read_le(cursor)?;
+        cursor.set_position(pos);
+        (-len.abs()).write_le(cursor)?;
         Ok(())
     }
 }

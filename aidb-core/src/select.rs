@@ -12,7 +12,7 @@ use crate::{
     data::DataHeader,
     schema::{IndexInfo, IndexType},
     sql::{SqlCol, SqlColOrExpr, SqlOn, SqlRel, SqlSelectTarget, SqlWhere},
-    storage::{BLOCK_SIZE, Block, BlockIndex, BlockOffset},
+    storage::{BLOCK_SIZE, Block, BlockIndex, BlockOffset, DataPointer},
 };
 
 use binrw::BinRead;
@@ -245,7 +245,7 @@ impl Aidb {
         where_: Option<SqlWhere>,
         limit: Option<usize>,
     ) -> Result<Response> {
-        let (columns, plan) = self
+        let (_, plan) = self
             .build_logical_plan(columns, table, join_on, where_, limit)
             .await?;
         debug!(logical = ?plan);
@@ -260,6 +260,89 @@ impl Aidb {
         })
     }
 
+    async fn select_for_ptr(
+        &mut self,
+        table: String,
+        where_: Option<SqlWhere>,
+    ) -> Result<Vec<DataPointer>> {
+        let (_, plan) = self
+            .build_logical_plan(vec![], Some(table), vec![], where_, None)
+            .await?;
+        debug!(logical = ?plan);
+        let mut plan = self.build_physical_plan(plan).await?;
+        debug!(physical = plan.to_string());
+        let mut rows = vec![];
+        while let Some((row, ptr)) = self.execute_for_ptr(&mut plan).await? {
+            debug!(?row, ptr = ptr.to_string());
+            rows.push(ptr);
+        }
+        plan.reset(self);
+        Ok(rows)
+    }
+
+    pub(crate) async fn update(
+        &mut self,
+        table: String,
+        set: Vec<(SqlCol, Value)>,
+        where_: Option<SqlWhere>,
+    ) -> Result<Response> {
+        let schema = self.get_schema(&table).await?;
+        if !schema.indices.is_empty() {
+            return Err(eyre!("update indexed table is not implemented"));
+        }
+        let mut indexed_set = vec![];
+        for (c, v) in set {
+            let c = match c {
+                SqlCol::Short(c) => c,
+                SqlCol::Full { table: t, column } => {
+                    if table == t {
+                        column
+                    } else {
+                        return Err(eyre!("table not specified"));
+                    }
+                }
+            };
+            let index = schema
+                .columns
+                .iter()
+                .position(|column| column.name == c)
+                .ok_or_eyre("column not found")?;
+            indexed_set.push((index, v));
+        }
+        self.put_schema(table.clone(), schema);
+        let rows = self.select_for_ptr(table, where_).await?;
+        let affected_rows = rows.len();
+        for ptr in rows {
+            let mut block = self.get_block(ptr.block).await?;
+            self.update_row(&mut block.cursor_at(ptr.offset), indexed_set.clone())
+                .await?;
+            self.put_block(ptr.block, block);
+            self.mark_block_dirty(ptr.block);
+        }
+        Ok(Response::Meta { affected_rows })
+    }
+
+    pub(crate) async fn delete_from(
+        &mut self,
+        table: String,
+        where_: Option<SqlWhere>,
+    ) -> Result<Response> {
+        let schema = self.get_schema(&table).await?;
+        if !schema.indices.is_empty() {
+            return Err(eyre!("delete from indexed table is not implemented"));
+        }
+        self.put_schema(table.clone(), schema);
+        let rows = self.select_for_ptr(table, where_).await?;
+        let affected_rows = rows.len();
+        for ptr in rows {
+            let mut block = self.get_block(ptr.block).await?;
+            self.delete_row(&mut block.cursor_at(ptr.offset)).await?;
+            self.put_block(ptr.block, block);
+            self.mark_block_dirty(ptr.block);
+        }
+        Ok(Response::Meta { affected_rows })
+    }
+
     async fn build_logical_plan(
         &mut self,
         columns: Vec<SqlSelectTarget>,
@@ -268,54 +351,12 @@ impl Aidb {
         where_: Option<SqlWhere>,
         limit: Option<usize>,
     ) -> Result<(Vec<Column>, LogicalQueryPlan)> {
-        // if selects const value only
-        if columns.iter().all(|column| match column {
-            SqlSelectTarget::Column(_) | SqlSelectTarget::Wildcard => false,
-            SqlSelectTarget::Const(_) | SqlSelectTarget::Variable(_) => true,
-        }) {
-            if (!join_on.is_empty()) || (where_.is_some()) {
-                return Err(eyre!("table required"));
-            }
-            let (headers, columns) = columns
-                .into_iter()
-                .map(|column| {
-                    let name = column.to_string();
-                    match column {
-                        SqlSelectTarget::Const(v) => (
-                            Column {
-                                name,
-                                datatype: v.datatype().unwrap_or(DataType::Text),
-                            },
-                            QueryColumn::Const(v),
-                        ),
-                        SqlSelectTarget::Variable(v) => (
-                            Column {
-                                name,
-                                datatype: DataType::Text,
-                            },
-                            QueryColumn::Const(match v.as_str() {
-                                "@@version_comment" => Value::Text("aidb".to_owned()),
-                                _ => Value::Null,
-                            }),
-                        ),
-                        _ => unreachable!(),
-                    }
-                })
-                .unzip();
-            return Ok((
-                headers,
-                LogicalQueryPlan {
-                    tables: vec![],
-                    columns,
-                    constraints: vec![],
-                    limit,
-                },
-            ));
-        }
-
-        let from_table = table.ok_or_eyre("table required")?;
+        let from_table = table;
         let mut headers = vec![];
-        let mut tables = vec![from_table.clone()];
+        let mut tables = vec![];
+        if let Some(ref table) = from_table {
+            tables.push(table.clone());
+        }
         tables.extend(join_on.iter().map(|(table, _on)| table.clone()));
         let mut query_columns = vec![];
         let mut constraints = vec![];
@@ -370,6 +411,7 @@ impl Aidb {
                     query_columns.push(QueryColumn::Column { table, column });
                 }
                 SqlSelectTarget::Wildcard => {
+                    let from_table = from_table.clone().ok_or_eyre("table required")?;
                     let schema = schemas.get(&from_table).unwrap();
                     headers.extend(schema.columns.iter().cloned());
                     query_columns.extend(schema.columns.iter().map(|column| QueryColumn::Column {
@@ -610,18 +652,22 @@ impl Aidb {
             }
         };
 
-        let plan = PhysicalPlan::Projection {
-            columns: logical
-                .columns
-                .into_iter()
-                .map(|column| match column {
-                    QueryColumn::Column { table, column } => {
-                        ProjectionColumn::Column(find_column_index(&table, &column))
-                    }
-                    QueryColumn::Const(value) => ProjectionColumn::Const(value),
-                })
-                .collect(),
-            inner: Box::new(plan),
+        let plan = if logical.columns.is_empty() {
+            plan
+        } else {
+            PhysicalPlan::Projection {
+                columns: logical
+                    .columns
+                    .into_iter()
+                    .map(|column| match column {
+                        QueryColumn::Column { table, column } => {
+                            ProjectionColumn::Column(find_column_index(&table, &column))
+                        }
+                        QueryColumn::Const(value) => ProjectionColumn::Const(value),
+                    })
+                    .collect(),
+                inner: Box::new(plan),
+            }
         };
 
         let plan = match logical.limit {
@@ -637,7 +683,7 @@ impl Aidb {
     }
 
     async fn execute_select(&mut self, plan: &mut PhysicalPlan) -> Result<Option<Row>> {
-        debug!(plan = plan.to_string());
+        debug!(plan = plan.to_string(), "execute_select");
         match plan {
             PhysicalPlan::Scan {
                 row_size,
@@ -811,6 +857,110 @@ impl Aidb {
                     Ok(None)
                 }
             }
+        }
+    }
+
+    async fn execute_for_ptr(
+        &mut self,
+        plan: &mut PhysicalPlan,
+    ) -> Result<Option<(Row, DataPointer)>> {
+        debug!(plan = plan.to_string(), "execute_update_delete_from");
+        match plan {
+            PhysicalPlan::Scan {
+                row_size,
+                first_block,
+                state,
+            } => match state {
+                ScanState::Initialized => {
+                    debug!(first_block);
+                    if *first_block == 0 {
+                        Ok(None)
+                    } else {
+                        let mut block = self.get_block(*first_block).await?;
+                        let mut cursor = block.cursor();
+                        let header = DataHeader::read(&mut cursor)?;
+                        let offset = cursor.position() as BlockOffset;
+                        *state = ScanState::Running {
+                            block_index: *first_block,
+                            next_block_index: header.next_data_block,
+                            block,
+                            offset,
+                        };
+                        Box::pin(self.execute_for_ptr(plan)).await
+                    }
+                }
+                ScanState::Running {
+                    block_index,
+                    next_block_index,
+                    block,
+                    offset,
+                } => {
+                    debug!(next_block_index);
+                    let mut cursor = block.cursor_at(*offset);
+                    while (BLOCK_SIZE as isize - cursor.position() as isize) > *row_size as isize {
+                        let position = cursor.position();
+                        if let Some(row) = self.read_row(&mut cursor).await? {
+                            *offset = cursor.position() as u16;
+                            return Ok(Some((
+                                row,
+                                DataPointer {
+                                    block: *block_index,
+                                    offset: position as u16,
+                                },
+                            )));
+                        };
+                        cursor.set_position(position + *row_size as u64);
+                    }
+                    if *next_block_index == 0 {
+                        let mut new_state = ScanState::Initialized;
+                        swap(state, &mut new_state);
+                        let ScanState::Running {
+                            block_index, block, ..
+                        } = new_state
+                        else {
+                            unreachable!()
+                        };
+                        self.put_block(block_index, block);
+                        Ok(None)
+                    } else {
+                        let mut block = self.get_block(*next_block_index).await?;
+                        let mut cursor = block.cursor();
+                        let header = DataHeader::read(&mut cursor)?;
+                        let offset = cursor.position() as BlockOffset;
+                        let mut new_state = ScanState::Running {
+                            block_index: *next_block_index,
+                            next_block_index: header.next_data_block,
+                            block,
+                            offset,
+                        };
+                        swap(state, &mut new_state);
+                        let ScanState::Running {
+                            block_index, block, ..
+                        } = new_state
+                        else {
+                            unreachable!()
+                        };
+                        self.put_block(block_index, block);
+                        Box::pin(self.execute_for_ptr(plan)).await
+                    }
+                }
+            },
+            PhysicalPlan::BTreeExact { .. } => unreachable!(),
+            PhysicalPlan::BTreeRange { .. } => unreachable!(),
+            PhysicalPlan::Projection { .. } => unreachable!(),
+            PhysicalPlan::CartesianProduct { .. } => unreachable!(),
+            PhysicalPlan::Selection { constraints, inner } => {
+                while let Some((row, ptr)) = Box::pin(self.execute_for_ptr(inner)).await? {
+                    if constraints.iter().all(|constraint| match constraint {
+                        SelectionConstraint::EqColumn(lhs, rhs) => row[*lhs] == row[*rhs],
+                        SelectionConstraint::EqConst(index, value) => row[*index] == *value,
+                    }) {
+                        return Ok(Some((row, ptr)));
+                    }
+                }
+                Ok(None)
+            }
+            PhysicalPlan::Limit { .. } => unreachable!(),
         }
     }
 }

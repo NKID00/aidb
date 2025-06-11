@@ -235,6 +235,8 @@ fn stmt(input: &str) -> ParseResult<SqlStmt> {
             insert_into,
             select,
             explain,
+            update,
+            delete_from,
             flush_tables,
             start_transaction,
             commit,
@@ -372,12 +374,13 @@ fn text(input: &str) -> ParseResult<String> {
                 preceded(
                     tag("\\"),
                     alt((
-                        map(one_of("nrt\\\""), |escape| match escape {
+                        map(one_of("nrt\\\'\""), |escape| match escape {
                             'n' => '\n',
                             'r' => '\r',
                             't' => '\t',
                             '\\' => '\\',
                             '\'' => '\'',
+                            '"' => '"',
                             _ => unreachable!(),
                         }),
                         map_opt(delimited(tag("{"), hex_u32, tag("}")), |unicode| {
@@ -401,9 +404,9 @@ fn text(input: &str) -> ParseResult<String> {
 fn const_(input: &str) -> ParseResult<Value> {
     alt((
         value(Value::Null, tag_no_case("NULL")),
-        map(integer, Value::Integer),
-        map(real, Value::Real),
         map(text, Value::Text),
+        map(real, Value::Real),
+        map(integer, Value::Integer),
     ))
     .parse(input)
 }
@@ -572,6 +575,36 @@ fn explain(input: &str) -> ParseResult<SqlStmt> {
             limit,
         }
     })
+    .parse(input)
+}
+
+fn update(input: &str) -> ParseResult<SqlStmt> {
+    map(
+        preceded(
+            kw_preceded("UPDATE"),
+            separated_pair(
+                ident,
+                kw("SET"),
+                (
+                    comma_list1(separated_pair(
+                        col,
+                        (multispace0, tag("="), multispace0),
+                        const_,
+                    )),
+                    opt(where_),
+                ),
+            ),
+        ),
+        |(table, (set, where_))| SqlStmt::Update { table, set, where_ },
+    )
+    .parse(input)
+}
+
+fn delete_from(input: &str) -> ParseResult<SqlStmt> {
+    map(
+        preceded(tag_no_case("DELETE"), (from, opt(where_))),
+        |(table, where_)| SqlStmt::DeleteFrom { table, where_ },
+    )
     .parse(input)
 }
 
