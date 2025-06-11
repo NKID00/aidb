@@ -196,8 +196,38 @@ impl Aidb {
             }
             self.put_block(schema_block_index, block);
             let next_schema_block_index = schema.next_schema_block;
+            self.put_schema(schema.name.clone(), Box::new(schema));
             schema_block_index = next_schema_block_index;
         }
+    }
+
+    pub async fn drop_table(self: &mut Aidb, table: String) -> Result<Response> {
+        let mut previous_table = "".to_owned();
+        let mut schema_block_index = self.superblock.first_schema_block;
+        while schema_block_index != 0 {
+            let mut block = self.get_block(schema_block_index).await?;
+            let mut schema = Schema::read(&mut block.cursor())?;
+            schema.block_index = schema_block_index;
+            if schema.name == table {
+                if previous_table.is_empty() {
+                    // this schema is the first
+                    self.superblock.first_schema_block = schema.next_schema_block;
+                    self.superblock_dirty = true;
+                } else {
+                    let mut previous_schema = self.get_schema(&previous_table).await.unwrap();
+                    previous_schema.next_schema_block = schema.next_schema_block;
+                    self.put_schema(previous_table.clone(), previous_schema);
+                    self.mark_schema_dirty(previous_table);
+                }
+                return Ok(Response::Meta { affected_rows: 0 });
+            }
+            self.put_block(schema_block_index, block);
+            let next_schema_block_index = schema.next_schema_block;
+            previous_table = schema.name.clone();
+            self.put_schema(schema.name.clone(), Box::new(schema));
+            schema_block_index = next_schema_block_index;
+        }
+        Err(eyre!("table not found"))
     }
 
     pub(crate) async fn get_schema(self: &mut Aidb, table: &str) -> Result<Box<Schema>> {

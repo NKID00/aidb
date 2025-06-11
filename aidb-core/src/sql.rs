@@ -28,6 +28,8 @@ pub enum SqlStmt {
         table: String,
         columns: Vec<(Column, Option<IndexType>)>,
     },
+    /// DROP TABLE table
+    DropTable { table: String },
     /// INSERT INTO table [(column, ...)] VALUES value, ...
     InsertInto {
         table: String,
@@ -232,6 +234,7 @@ fn stmt(input: &str) -> ParseResult<SqlStmt> {
             show_tables,
             describe,
             create_table,
+            drop_table,
             insert_into,
             select,
             explain,
@@ -331,6 +334,14 @@ fn create_table(input: &str) -> ParseResult<SqlStmt> {
             ),
         ),
         |(table, columns)| SqlStmt::CreateTable { table, columns },
+    )
+    .parse(input)
+}
+
+fn drop_table(input: &str) -> ParseResult<SqlStmt> {
+    map(
+        preceded((kw_preceded("DROP"), kw_preceded("TABLE")), ident),
+        |table| SqlStmt::DropTable { table },
     )
     .parse(input)
 }

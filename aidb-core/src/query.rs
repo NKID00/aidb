@@ -22,6 +22,7 @@ impl Aidb {
             SqlStmt::ShowTables => self.show_tables().await,
             SqlStmt::Describe { table } => self.describe(table).await,
             SqlStmt::CreateTable { table, columns } => self.create_table(table, columns).await,
+            SqlStmt::DropTable { table } => self.drop_table(table).await,
             SqlStmt::InsertInto {
                 table,
                 columns,

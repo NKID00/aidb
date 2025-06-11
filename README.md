@@ -7,9 +7,8 @@ Try it out at [nk0.me/g/aidb](https://nk0.me/g/aidb), or run it locally with `ca
 ## Features
 
 - [x] Schema storage
-- [x] Integer, Real and Text datatypes
-- [x] CREATE TABLE statement
-- [ ] DROP TABLE statement
+- [x] INTEGER, REAL and TEXT datatype
+- [x] CREATE TABLE, DESCRIBE and DROP TABLE statement
 - [x] Storage engine
 - [x] Logical query plan and physical query plan
 - [x] Query engine
