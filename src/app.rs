@@ -76,14 +76,14 @@ impl Chat {
     fn view(&self) -> impl IntoView + use<> {
         let response = either! {self.response.clone(),
             Some(Ok(Response::Meta { affected_rows })) => view! {
-                <div class="p-2 self-start">
+                <div class="my-2 p-2 self-start">
                     { format!("Query OK, {affected_rows} rows affected ({:.3} sec)", self.duration) }
                 </div>
             },
             Some(Ok(Response::Rows { columns, rows })) => {
                 either! {rows.is_empty(),
                     true => view! {
-                        <div class="p-2 self-start">
+                        <div class="my-2 p-2 self-start">
                             { format!("Empty set ({:.3} sec)", self.duration) }
                         </div>
                     },
@@ -114,11 +114,11 @@ impl Chat {
                             })
                             .collect_vec();
                         view! {
-                            <table class="p-2 self-start border-collapse">
+                            <table class="my-2 p-2 self-start border-collapse">
                                 <thead> <tr> { header } </tr> </thead>
                                 <tbody> { body } </tbody>
                             </table>
-                            <div class="p-2 self-start">
+                            <div class="my-2 p-2 self-start">
                                 { if len == 1 {
                                     format!("1 row in set ({:.3} sec)", self.duration)
                                 } else {
@@ -130,7 +130,7 @@ impl Chat {
                 }
             },
             Some(Err(e)) => view! {
-                <div class="p-2 self-start text-red-500">
+                <div class="my-2 p-2 self-start text-red-500">
                     { format!("ERROR: {e}") }
                 </div>
             },
@@ -278,11 +278,11 @@ pub fn App() -> impl IntoView {
 
     let submit_input = move |input: String| {
         log!("submit: {:?}", input);
-        set_chat.update(|chats| chats.submit(input.clone()));
         spawn_local({
             let worker = worker.clone();
             async move {
                 let mut worker = worker.lock().await;
+                set_chat.update(|chats| chats.submit(input.clone()));
                 worker.send(WorkerRequest::Query(input)).await.unwrap();
                 let Some(response) = worker.next().await else {
                     panic!("worker exited unexpectedly");
@@ -377,7 +377,12 @@ pub fn App() -> impl IntoView {
                                     let input_element = input_ref.get_untracked().unwrap();
                                     input_element.set_text_content(Some(""));
                                     set_input("".to_owned());
-                                    submit_input(input);
+                                    for stmt in input.split(";") {
+                                        if stmt.is_empty() {
+                                            continue;
+                                        }
+                                        submit_input(format!("{};", stmt.trim()));
+                                    }
                                 }
                             } on:paste=move |ev| {
                                 ev.stop_propagation();

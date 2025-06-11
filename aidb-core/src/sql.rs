@@ -153,6 +153,7 @@ impl Aidb {
             ("VALUES (1)", "VALUES"),
             ("TABLE a (a INTEGER)", "TABLE"),
             ("TABLES", "TABLES"),
+            ("TRANSACTION", "TRANSACTION"),
             (")", ")"),
             (";", ";"),
         ] {
