@@ -17,7 +17,7 @@ Try it out at [nk0.me/g/aidb](https://nk0.me/g/aidb), or run it locally with `ca
 - [ ] UPDATE statement
 - [ ] DELETE FROM statement
 - [x] B-Tree index
-- [ ] EXPLAIN statement
+- [x] EXPLAIN statement
 - [x] Transaction
 - [x] START TRANSACTION, COMMIT and ROLLBACK statement
 - [x] auto rollback on query failure

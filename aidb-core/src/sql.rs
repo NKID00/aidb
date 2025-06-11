@@ -42,6 +42,14 @@ pub enum SqlStmt {
         where_: Option<SqlWhere>,
         limit: Option<usize>,
     },
+    /// EXPLAIN SELECT ...
+    Explain {
+        columns: Vec<SqlSelectTarget>,
+        table: Option<String>,
+        join_on: Vec<(String, SqlOn)>,
+        where_: Option<SqlWhere>,
+        limit: Option<usize>,
+    },
     /// UPDATE table SET column = value, ... [WHERE condition]
     Update {
         table: String,
@@ -226,6 +234,7 @@ fn stmt(input: &str) -> ParseResult<SqlStmt> {
             create_table,
             insert_into,
             select,
+            explain,
             flush_tables,
             start_transaction,
             commit,
@@ -540,6 +549,29 @@ fn select(input: &str) -> ParseResult<SqlStmt> {
             limit: limit.map(|limit| limit as usize),
         },
     )
+    .parse(input)
+}
+
+fn explain(input: &str) -> ParseResult<SqlStmt> {
+    map(preceded(kw_preceded("EXPLAIN"), select), |stmt| {
+        let SqlStmt::Select {
+            columns,
+            table,
+            join_on,
+            where_,
+            limit,
+        } = stmt
+        else {
+            unreachable!()
+        };
+        SqlStmt::Explain {
+            columns,
+            table,
+            join_on,
+            where_,
+            limit,
+        }
+    })
     .parse(input)
 }
 

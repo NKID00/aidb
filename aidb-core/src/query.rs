@@ -34,6 +34,13 @@ impl Aidb {
                 where_,
                 limit,
             } => self.select(columns, table, join_on, where_, limit).await,
+            SqlStmt::Explain {
+                columns,
+                table,
+                join_on,
+                where_,
+                limit,
+            } => self.explain(columns, table, join_on, where_, limit).await,
             SqlStmt::Update { .. } => todo!(),
             SqlStmt::DeleteFrom { .. } => todo!(),
             SqlStmt::FlushTables => {

@@ -237,6 +237,29 @@ impl Aidb {
         Ok(Response::Rows { columns, rows })
     }
 
+    pub(crate) async fn explain(
+        &mut self,
+        columns: Vec<SqlSelectTarget>,
+        table: Option<String>,
+        join_on: Vec<(String, SqlOn)>,
+        where_: Option<SqlWhere>,
+        limit: Option<usize>,
+    ) -> Result<Response> {
+        let (columns, plan) = self
+            .build_logical_plan(columns, table, join_on, where_, limit)
+            .await?;
+        debug!(logical = ?plan);
+        let plan = self.build_physical_plan(plan).await?;
+        debug!(physical = plan.to_string());
+        Ok(Response::Rows {
+            columns: vec![Column {
+                name: "query_plan".to_owned(),
+                datatype: DataType::Text,
+            }],
+            rows: vec![vec![Value::Text(plan.to_string())]],
+        })
+    }
+
     async fn build_logical_plan(
         &mut self,
         columns: Vec<SqlSelectTarget>,
